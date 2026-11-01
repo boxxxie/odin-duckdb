@@ -1,10 +1,6 @@
 package duckdb
 
 import "core:c"
-import "core:fmt"
-import "core:os"
-import "core:reflect"
-import "core:strings"
 
 foreign import duckdb_lib "system:duckdb"
 
@@ -164,55 +160,18 @@ Database :: struct {
 	path: string,
 }
 
+// Red-First Stubs (implementation saved in commit `036eef4`, reverted while finalizing ATDD test suite):
 open :: proc(path: string = "", low_memory: bool = false) -> (Database, string, bool) {
-	d: Database
-	d.path = path
-	c_path: cstring = nil
-	if len(path) > 0 {
-		c_path = strings.clone_to_cstring(path, context.temp_allocator)
-	}
-
-	if duckdb_open(c_path, &d.db) != .DuckDBSuccess {
-		return d, fmt.tprintf("Failed to open DuckDB database: %s", path), false
-	}
-	if duckdb_connect(d.db, &d.conn) != .DuckDBSuccess {
-		duckdb_close(&d.db)
-		return d, "Failed to connect to DuckDB database", false
-	}
-
-	if low_memory {
-		exec(&d, "SET memory_limit = '256MB'; SET threads = 2; SET preserve_insertion_order = false;")
-	}
-	return d, "", true
+	return Database{}, "NOT_IMPLEMENTED", false
 }
 
 close :: proc(d: ^Database) {
-	if d.conn != nil {
-		duckdb_disconnect(&d.conn)
-		d.conn = nil
-	}
-	if d.db != nil {
-		duckdb_close(&d.db)
-		d.db = nil
-	}
 }
 
 exec :: proc(d: ^Database, sql: string) -> (string, bool) {
-	c_sql := strings.clone_to_cstring(sql, context.temp_allocator)
-	res: duckdb_result
-	state := duckdb_query(d.conn, c_sql, &res)
-	defer duckdb_destroy_result(&res)
-
-	if state != .DuckDBSuccess {
-		err_c := duckdb_result_error(&res)
-		err_msg := err_c != nil ? string(err_c) : "DuckDB execution error"
-		return strings.clone(err_msg, context.temp_allocator), false
-	}
-	return "", true
+	return "NOT_IMPLEMENTED", false
 }
 
-// Escape single quotes for safe SQL literal embedding
 sql_escape :: proc(s: string, allocator := context.temp_allocator) -> string {
-	res, _ := strings.replace_all(s, "'", "''", allocator)
-	return res
+	return ""
 }

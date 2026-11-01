@@ -20,7 +20,6 @@ package duckdb
 // ============================================================================
 
 import "core:c"
-import "core:mem"
 
 when ODIN_OS == .Linux || ODIN_OS == .Darwin {
 	foreign import libduckdb "system:duckdb"
@@ -1278,96 +1277,59 @@ v2_str_from_string :: #force_inline proc "contextless" (s: string) -> V2_Str {
 	return V2_Str{ptr = raw_data(s), len = V2_Idx(len(s))}
 }
 
+// Red-First Stubs (implementation saved in commit `036eef4`, reverted while finalizing ATDD test suite):
 v2_str_to_string :: #force_inline proc "contextless" (s: V2_Str) -> string {
-	if s.ptr == nil || s.len == 0 {
-		return ""
-	}
-	return string(s.ptr[:s.len])
+	return ""
 }
 
 v2_bytes_is_inlined :: #force_inline proc "contextless" (b: ^V2_Bytes) -> bool {
-	return b.inlined.length <= V2_BYTES_INLINE_LENGTH
+	return false
 }
 
 v2_bytes_length :: #force_inline proc "contextless" (b: ^V2_Bytes) -> u32 {
-	return b.inlined.length
+	return 0
 }
 
 v2_bytes_data :: #force_inline proc "contextless" (b: ^V2_Bytes) -> [^]u8 {
-	if v2_bytes_is_inlined(b) {
-		return &b.inlined.inlined[0]
-	}
-	return b.pointer.ptr
+	return &b.inlined.inlined[0]
 }
 
 v2_bytes_to_string :: #force_inline proc "contextless" (b: ^V2_Bytes) -> string {
-	n := int(v2_bytes_length(b))
-	if n == 0 {
-		return ""
-	}
-	return string(v2_bytes_data(b)[:n])
+	return ""
 }
 
-// BIT wire format (`test_capi_v2_bytes.cpp` lines 31-41):
-// byte 0 is the padding-bit count; bytes 1.. are the payload.
 v2_bit_padding :: #force_inline proc "contextless" (b: ^V2_Bytes) -> u8 {
-	if v2_bytes_length(b) == 0 {
-		return 0
-	}
-	return v2_bytes_data(b)[0]
+	return 0
 }
 
 v2_bit_count :: #force_inline proc "contextless" (b: ^V2_Bytes) -> u64 {
-	length := v2_bytes_length(b)
-	if length == 0 {
-		return 0
-	}
-	return u64(length - 1) * 8 - u64(v2_bytes_data(b)[0])
+	return 0
 }
 
 v2_bit_data :: #force_inline proc "contextless" (b: ^V2_Bytes) -> [^]u8 {
-	return v2_bytes_data(b)[1:]
+	return &b.inlined.inlined[0]
 }
 
-// BIGNUM sign encoding (`test_capi_v2_bytes.cpp` lines 43-46):
-// MSB of data[0] clear = negative, set = positive.
 v2_bignum_is_negative :: #force_inline proc "contextless" (b: ^V2_Bytes) -> bool {
-	if v2_bytes_length(b) == 0 {
-		return false
-	}
-	return (v2_bytes_data(b)[0] & 0x80) == 0
+	return false
 }
 
-// Vector view selection & validity helpers (`test_capi_v2.hpp` lines 505-516):
 v2_sel_at :: #force_inline proc "contextless" (sel: [^]V2_Sel, i: V2_Idx) -> V2_Idx {
-	if sel == nil {
-		return i
-	}
-	return V2_Idx(sel[i])
+	return i
 }
 
 v2_row_is_valid :: #force_inline proc "contextless" (view: V2_Vector_View, logical_row: V2_Idx) -> bool {
-	phys := v2_sel_at(view.sel, logical_row)
-	if view.validity == nil {
-		return true
-	}
-	return (view.validity[phys / 64] & (u64(1) << (phys % 64))) != 0
+	return false
 }
 
-// Physical validity mask bit helpers (`test_cpp_api_vector.cpp` lines 426-498):
 v2_validity_row_is_valid :: #force_inline proc "contextless" (validity: [^]u64, phys_row: V2_Idx) -> bool {
-	if validity == nil {
-		return true
-	}
-	return (validity[phys_row / 64] & (u64(1) << (phys_row % 64))) != 0
+	return false
 }
 
 v2_validity_set_valid :: #force_inline proc "contextless" (validity: [^]u64, phys_row: V2_Idx) {
-	validity[phys_row / 64] |= (u64(1) << (phys_row % 64))
 }
 
 v2_validity_set_invalid :: #force_inline proc "contextless" (validity: [^]u64, phys_row: V2_Idx) {
-	validity[phys_row / 64] &= ~(u64(1) << (phys_row % 64))
 }
 
 // Release helpers for Arrow C Data Interface structs (`duckdb_v2.h` lines 139-176):
@@ -1389,38 +1351,6 @@ arrow_stream_release :: proc "contextless" (stream: ^Arrow_Array_Stream) {
 	}
 }
 
-// Assembles a `V2_Bytes` in a vector's arena (`test_capi_v2.hpp` lines 216-250, 518-536):
 v2_vector_assign_string :: proc(vec: V2_Vector_Handle, index: V2_Idx, s: string, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
-	arena: V2_Arena_Handle
-	rc := duckdb_v2_vector_get_arena(vec, &arena, err)
-	if rc != .NONE {
-		return rc
-	}
-
-	storage: V2_Bytes
-	if len(s) <= V2_BYTES_INLINE_LENGTH {
-		storage.inlined.length = u32(len(s))
-		if len(s) > 0 {
-			mem.copy(&storage.inlined.inlined[0], raw_data(s), len(s))
-		}
-	} else {
-		bytes_ptr: [^]u8
-		rc = duckdb_v2_arena_allocate(arena, V2_Idx(len(s)), &bytes_ptr, err)
-		if rc != .NONE {
-			return rc
-		}
-		mem.copy(bytes_ptr, raw_data(s), len(s))
-		storage.pointer.length = u32(len(s))
-		storage.pointer.ptr = bytes_ptr
-		mem.copy(&storage.pointer.prefix[0], bytes_ptr, 4)
-	}
-
-	raw: rawptr
-	rc = duckdb_v2_vector_get_data_mutable(vec, &raw, err)
-	if rc != .NONE {
-		return rc
-	}
-	arr := cast([^]V2_Bytes)raw
-	arr[index] = storage
-	return .NONE
+	return .QUERY_NOT_IMPLEMENTED
 }

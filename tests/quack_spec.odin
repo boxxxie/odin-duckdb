@@ -108,10 +108,12 @@ spec_sqllogic_parser_and_upstream_quack_test_files :: proc(t: ^testing.T) {
 
 		// Verify `require quack`, `require json`, `require httpfs`, `statement ok`, and `query I` / `query II`:
 		testing.expect(t, len(directives) >= 15)
-		testing.expect_value(t, directives[0].kind, duckdb.Sqllogic_Directive_Kind.REQUIRE)
-		testing.expect_value(t, directives[0].arg, "quack")
-		testing.expect_value(t, directives[1].kind, duckdb.Sqllogic_Directive_Kind.REQUIRE)
-		testing.expect_value(t, directives[1].arg, "json")
+		if len(directives) >= 2 {
+			testing.expect_value(t, directives[0].kind, duckdb.Sqllogic_Directive_Kind.REQUIRE)
+			testing.expect_value(t, directives[0].arg, "quack")
+			testing.expect_value(t, directives[1].kind, duckdb.Sqllogic_Directive_Kind.REQUIRE)
+			testing.expect_value(t, directives[1].arg, "json")
+		}
 
 		found_identify := false
 		found_two_col_query := false
@@ -135,8 +137,10 @@ spec_sqllogic_parser_and_upstream_quack_test_files :: proc(t: ^testing.T) {
 		directives := duckdb.sqllogic_parse_script(string(raw), context.temp_allocator)
 
 		testing.expect(t, len(directives) >= 9)
-		testing.expect_value(t, directives[0].kind, duckdb.Sqllogic_Directive_Kind.INCLUDE)
-		testing.expect_value(t, directives[0].arg, "test/template/quack_setup.test_template")
+		if len(directives) >= 1 {
+			testing.expect_value(t, directives[0].kind, duckdb.Sqllogic_Directive_Kind.INCLUDE)
+			testing.expect_value(t, directives[0].arg, "test/template/quack_setup.test_template")
+		}
 
 		found_auth_err := false
 		for d in directives {

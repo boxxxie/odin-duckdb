@@ -204,7 +204,9 @@ spec_v2_vector_nested_struct_nulls_zero_copy_reference_and_cast :: proc(t: ^test
 		expect_v2_ok(t, duckdb.duckdb_v2_data_chunk_get_vector(chunk, 2, &ref_int_vec, &fx.err), &fx.err)
 
 		expect_v2_ok(t, duckdb.duckdb_v2_vector_set_size(src_str_vec, 3, &fx.err), &fx.err)
-		expect_v2_ok(t, duckdb.v2_vector_assign_string(src_str_vec, 0, "10"))
+		if !expect_v2_ok(t, duckdb.v2_vector_assign_string(src_str_vec, 0, "10")) {
+			return
+		}
 		expect_v2_ok(t, duckdb.v2_vector_assign_string(src_str_vec, 1, "bad_int"))
 		expect_v2_ok(t, duckdb.v2_vector_assign_string(src_str_vec, 2, "30"))
 
