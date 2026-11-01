@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  check-and-test:
+    name: Odin Check & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Odin compiler
+        uses: onia/setup-odin@v2
+        with:
+          release: latest
+
+      - name: Check package syntax & types
+        run: odin check duckdb -no-entry-point
+
+      - name: Check test suite syntax & types (when libduckdb is installed)
+        run: |
+          if ldconfig -p | grep -q libduckdb; then
+            odin test tests
+          else
+            echo "libduckdb not preinstalled on runner; skipping link/runtime test step"
+          fi
