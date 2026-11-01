@@ -14,6 +14,7 @@ package duckdb
 //   (Quack remote catalog & `alias.query(...)` RPC pushdown)
 // ============================================================================
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:strings"
 
@@ -48,6 +49,7 @@ Query :: struct {
 	offset_val:   int,
 	summarize:    bool,
 	sample_spec:  string,
+	params:       [dynamic]any,
 }
 
 query_from :: proc(table: string, allocator := context.temp_allocator) -> Query {
@@ -60,6 +62,7 @@ query_from :: proc(table: string, allocator := context.temp_allocator) -> Query 
 		where_exprs = make([dynamic]string, allocator),
 		group_by    = make([dynamic]string, allocator),
 		order_by    = make([dynamic]string, allocator),
+		params      = make([dynamic]any, allocator),
 		limit_val   = -1,
 		offset_val  = -1,
 	}
@@ -119,6 +122,21 @@ query_replace :: proc(q: ^Query, exprs: ..string) -> ^Query {
 
 query_where :: proc(q: ^Query, expr: string) -> ^Query {
 	append(&q.where_exprs, expr)
+	return q
+}
+
+query_bind :: proc(q: ^Query, args: ..any) -> ^Query {
+	for a in args {
+		append(&q.params, a)
+	}
+	return q
+}
+
+query_where_bind :: proc(q: ^Query, expr: string, args: ..any) -> ^Query {
+	append(&q.where_exprs, expr)
+	for a in args {
+		append(&q.params, a)
+	}
 	return q
 }
 
@@ -275,4 +293,16 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 	}
 
 	return strings.to_string(b)
+}
+
+// Compiles `q` to SQL and executes it with its bound `q.params` via `query_as`.
+query_execute_as :: proc(
+	conn: V2_Connection_Handle,
+	$T: typeid,
+	q: Query,
+	allocator := context.allocator,
+	err: ^V2_Error_Info_Handle = nil,
+) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
+	sql := query_to_sql(q, context.temp_allocator)
+	return query_as(conn, T, sql, allocator, err, ..q.params[:])
 }

@@ -140,6 +140,41 @@ duckdb_type_id_to_odin_type :: proc(type_id: V2_Logical_Type_Id) -> string {
 	return "string"
 }
 
+// Maps a `V2_Logical_Type_Id` to its CUE schema type constraint.
+duckdb_type_id_to_cue_type :: proc(type_id: V2_Logical_Type_Id) -> string {
+	#partial switch type_id {
+	case .BOOLEAN:
+		return "bool"
+	case .TINYINT:
+		return "int8"
+	case .SMALLINT:
+		return "int16"
+	case .INTEGER:
+		return "int32"
+	case .BIGINT:
+		return "int64"
+	case .UTINYINT:
+		return "uint8"
+	case .USMALLINT:
+		return "uint16"
+	case .UINTEGER:
+		return "uint32"
+	case .UBIGINT:
+		return "uint64"
+	case .FLOAT:
+		return "float32"
+	case .DOUBLE, .DECIMAL:
+		return "number"
+	case .VARCHAR, .DATE, .TIME, .TIME_NS, .TIME_TZ, .TIMESTAMP, .TIMESTAMP_SEC, .TIMESTAMP_MS, .TIMESTAMP_NS, .TIMESTAMP_TZ, .TIMESTAMP_TZ_NS, .UUID, .INTERVAL:
+		return "string"
+	case .BLOB:
+		return "bytes"
+	case .HUGEINT, .UHUGEINT:
+		return "int"
+	}
+	return "_"
+}
+
 @(private = "file")
 is_odin_reserved_word :: proc(ident: string) -> bool {
 	switch ident {
@@ -210,6 +245,32 @@ generate_odin_struct_code :: proc(
 		escaped_tag, _ := strings.replace_all(col.name, `\`, `\\`, allocator)
 		escaped_tag, _ = strings.replace_all(escaped_tag, `"`, `\"`, allocator)
 		fmt.sbprintf(&b, "\t%s: %s `duckdb:\"%s\"`,\n", field_ident, odin_t, escaped_tag)
+	}
+	strings.write_string(&b, "}\n")
+	return strings.to_string(b)
+}
+
+// Generates a CUE schema definition (`#Definition: { ... }`) from `columns`.
+generate_cue_schema_code :: proc(
+	package_name: string,
+	definition_name: string,
+	columns: []Column_Schema,
+	allocator := context.temp_allocator,
+) -> string {
+	b := strings.builder_make(allocator)
+	if len(package_name) > 0 {
+		fmt.sbprintf(&b, "package %s\n\n", package_name)
+	}
+	def_ident := strings.trim_prefix(definition_name, "#")
+	fmt.sbprintf(&b, "#%s: {{\n", def_ident)
+	for col, idx in columns {
+		field_ident := sanitize_odin_identifier(col.name, idx, allocator)
+		cue_t := duckdb_type_id_to_cue_type(col.type_id)
+		if col.nullable {
+			fmt.sbprintf(&b, "\t%s?: %s | null\n", field_ident, cue_t)
+		} else {
+			fmt.sbprintf(&b, "\t%s: %s\n", field_ident, cue_t)
+		}
 	}
 	strings.write_string(&b, "}\n")
 	return strings.to_string(b)

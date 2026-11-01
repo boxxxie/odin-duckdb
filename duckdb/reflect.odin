@@ -18,6 +18,7 @@ package duckdb
 // ============================================================================
 
 import "base:intrinsics"
+import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
 import "core:reflect"
@@ -32,6 +33,7 @@ Struct_Field_Mapping :: struct {
 	type:        ^reflect.Type_Info,
 	is_maybe:    bool,
 	inner_type:  ^reflect.Type_Info,
+	is_json:     bool,
 	is_pk:       bool,
 	not_null:    bool,
 	is_unique:   bool,
@@ -139,22 +141,141 @@ reflect_struct_mappings :: proc($T: typeid, allocator := context.temp_allocator)
 					m.not_null = true
 				} else if trimmed == "unique" {
 					m.is_unique = true
+				} else if trimmed == "json" {
+					m.is_json = true
 				} else if strings.has_prefix(trimmed, "default=") {
 					m.default_val = trimmed[len("default="):]
 				}
 			}
 		}
 
-		sql_t, tid, ok := odin_type_to_duckdb_sql(f.type)
-		if !ok {
-			m.ignored = true
+		if m.is_json {
+			m.sql_type = "JSON"
+			m.type_id = .VARCHAR
 		} else {
-			m.sql_type = sql_t
-			m.type_id = tid
+			sql_t, tid, ok := odin_type_to_duckdb_sql(f.type)
+			if !ok {
+				m.ignored = true
+			} else {
+				m.sql_type = sql_t
+				m.type_id = tid
+			}
 		}
 		append(&mappings, m)
 	}
 	return mappings
+}
+
+@(private = "file")
+assign_json_value_to_any :: proc(jv: json.Value, dst: any, allocator := context.allocator) -> bool {
+	if dst == nil || dst.data == nil {
+		return false
+	}
+	if _, is_null := jv.(json.Null); is_null {
+		return true
+	}
+	ti := reflect.type_info_base(type_info_of(dst.id))
+	#partial switch v in ti.variant {
+	case reflect.Type_Info_Boolean:
+		if b, ok := jv.(json.Boolean); ok {
+			(cast(^bool)dst.data)^ = bool(b)
+			return true
+		}
+	case reflect.Type_Info_Integer:
+		val_i64: i64
+		if i, ok := jv.(json.Integer); ok {
+			val_i64 = i64(i)
+		} else if f, ok_f := jv.(json.Float); ok_f {
+			val_i64 = i64(f)
+		} else {
+			return false
+		}
+		if v.signed {
+			switch ti.size {
+			case 1:
+				(cast(^i8)dst.data)^ = i8(val_i64)
+			case 2:
+				(cast(^i16)dst.data)^ = i16(val_i64)
+			case 4:
+				(cast(^i32)dst.data)^ = i32(val_i64)
+			case 8:
+				(cast(^i64)dst.data)^ = val_i64
+			}
+		} else {
+			switch ti.size {
+			case 1:
+				(cast(^u8)dst.data)^ = u8(val_i64)
+			case 2:
+				(cast(^u16)dst.data)^ = u16(val_i64)
+			case 4:
+				(cast(^u32)dst.data)^ = u32(val_i64)
+			case 8:
+				(cast(^u64)dst.data)^ = u64(val_i64)
+			}
+		}
+		return true
+	case reflect.Type_Info_Float:
+		val_f64: f64
+		if f, ok := jv.(json.Float); ok {
+			val_f64 = f64(f)
+		} else if i, ok_i := jv.(json.Integer); ok_i {
+			val_f64 = f64(i)
+		} else {
+			return false
+		}
+		if ti.size == 4 {
+			(cast(^f32)dst.data)^ = f32(val_f64)
+		} else {
+			(cast(^f64)dst.data)^ = val_f64
+		}
+		return true
+	case reflect.Type_Info_String:
+		if s, ok := jv.(json.String); ok {
+			(cast(^string)dst.data)^ = strings.clone(string(s), allocator)
+			return true
+		}
+	case reflect.Type_Info_Slice:
+		arr, ok := jv.(json.Array)
+		if !ok {
+			return false
+		}
+		elem_size := v.elem.size
+		raw_mem, alloc_err := mem.alloc_bytes(elem_size * len(arr), v.elem.align, allocator)
+		if alloc_err != nil {
+			return false
+		}
+		for item_jv, idx in arr {
+			elem_ptr := rawptr(uintptr(raw_data(raw_mem)) + uintptr(idx * elem_size))
+			if !assign_json_value_to_any(item_jv, any{elem_ptr, v.elem.id}, allocator) {
+				return false
+			}
+		}
+		raw_slice := cast(^mem.Raw_Slice)dst.data
+		raw_slice.data = raw_data(raw_mem)
+		raw_slice.len = len(arr)
+		return true
+	case reflect.Type_Info_Struct:
+		obj, ok := jv.(json.Object)
+		if !ok {
+			return false
+		}
+		fields := reflect.struct_fields_zipped(dst.id)
+		base_bytes := cast([^]u8)dst.data
+		for sf in fields {
+			json_key := sf.name
+			if jtag, has_jtag := reflect.struct_tag_lookup(sf.tag, "json"); has_jtag && len(jtag) > 0 && jtag != "-" {
+				json_key = strings.split(string(jtag), ",", context.temp_allocator)[0]
+			}
+			if field_jv, exists := obj[json_key]; exists {
+				f_ptr := rawptr(&base_bytes[sf.offset])
+				if !assign_json_value_to_any(field_jv, any{f_ptr, sf.type.id}, allocator) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // Generates a `CREATE TABLE [IF NOT EXISTS] <table_name> (...)` DDL statement from an Odin struct `$T`.
@@ -325,6 +446,17 @@ append_slice :: proc(
 					val_ptr = sub_any.data
 				}
 
+				if f.is_json {
+					json_bytes, m_err := json.marshal(any{val_ptr, f.inner_type.id}, allocator = context.temp_allocator)
+					if m_err != nil {
+						return .TYPE_CONVERSION
+					}
+					if rc := v2_vector_assign_bytes(vec, V2_Idx(r_idx), json_bytes, err); rc != .NONE {
+						return rc
+					}
+					continue
+				}
+
 				#partial switch f.type_id {
 				case .BOOLEAN:
 					(cast([^]bool)raw)[r_idx] = (cast(^bool)val_ptr)^
@@ -423,12 +555,14 @@ append_slice :: proc(
 // Executes `sql` via C API v2, matches result columns by name against struct `duckdb:"..."` tags
 // (with positional fallback when unaliased), verifies runtime `V2_Logical_Type_Id` compatibility
 // before dereferencing vector buffers, and unmarshals the returned rows into `[dynamic]T`.
+// Supports variadic positional query parameters (`args: ..any`).
 query_as :: proc(
 	conn: V2_Connection_Handle,
 	$T: typeid,
 	sql: string,
 	allocator := context.allocator,
 	err: ^V2_Error_Info_Handle = nil,
+	args: ..any,
 ) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
 	out = make([dynamic]T, allocator)
 	mappings := reflect_struct_mappings(T, context.temp_allocator)
@@ -439,23 +573,8 @@ query_as :: proc(
 		}
 	}
 
-	c_sql := strings.clone_to_cstring(sql, context.temp_allocator)
-	iter: V2_Statement_Iterator_Handle
-	rc = duckdb_v2_parse_sql(conn, c_sql, &iter, err)
-	if rc != .NONE {
-		return out, rc
-	}
-	defer duckdb_v2_statement_iterator_destroy(&iter)
-
-	stmt: V2_Sql_Statement_Handle
-	rc = duckdb_v2_statement_iterator_next(iter, &stmt, err)
-	if rc != .NONE {
-		return out, rc
-	}
-	defer duckdb_v2_sql_statement_destroy(&stmt)
-
 	res: V2_Result_Handle
-	rc = duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, &res, err)
+	rc = v2_query(conn, sql, &res, err, ..args)
 	if rc != .NONE {
 		return out, rc
 	}
@@ -592,6 +711,22 @@ query_as :: proc(
 				}
 				phys := v2_sel_at(view.sel, r)
 				field_ptr := cast(rawptr)&item_bytes[f.offset]
+
+				if f.is_json {
+					b_ptr := &((cast([^]V2_Bytes)view.data)[phys])
+					raw_json := v2_bytes_data(b_ptr)[:int(v2_bytes_length(b_ptr))]
+					jv, p_err := json.parse(raw_json, allocator = context.temp_allocator)
+					if p_err != .None {
+						return out, .TYPE_CONVERSION
+					}
+					if !assign_json_value_to_any(jv, any{field_ptr, f.inner_type.id}, allocator) {
+						return out, .TYPE_CONVERSION
+					}
+					if f.is_maybe {
+						reflect.set_union_variant_typeid(any{field_ptr, f.type.id}, f.inner_type.id)
+					}
+					continue
+				}
 
 				#partial switch f.type_id {
 				case .BOOLEAN:

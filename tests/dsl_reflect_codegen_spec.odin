@@ -36,6 +36,17 @@ Reserved_Keyword_Row :: struct {
 	select: string `duckdb:"select"`,
 }
 
+Sensor_Meta :: struct {
+	firmware: string,
+	tags:     []string,
+	gain:     f64,
+}
+
+Json_Tagged_Sensor :: struct {
+	id:   i64         `duckdb:"id,pk"`,
+	meta: Sensor_Meta `duckdb:"meta,json"`,
+}
+
 @(test)
 spec_layer1_reflect_create_table_append_slice_and_query_as :: proc(t: ^testing.T) {
 	fx := dsl_with_memory_db(t)
@@ -129,13 +140,15 @@ spec_layer1_reflect_create_table_append_slice_and_query_as :: proc(t: ^testing.T
 		testing.expect_value(t, kw_rows[0].select, "quoted_ok")
 	}
 
-	// 6. Positional column fallback + `.OTHER` (`SEQUENCE` from `range()`) vector flattening in `query_as`:
+	// 6. `query_as` variadic parameter binding, positional fallback, and `.OTHER` (`SEQUENCE`) vector flattening:
 	seq_rows, rc_seq := duckdb.query_as(
 		fx.conn,
 		Sensor_Reading,
-		"SELECT i, 'seq_sensor', 55::INTEGER, true FROM range(1, 3) t(i)",
+		"SELECT i, $1::VARCHAR, $2::INTEGER, true FROM range(1, 3) t(i)",
 		context.temp_allocator,
 		&fx.err,
+		"seq_sensor",
+		i32(55),
 	)
 	expect_v2_ok(t, rc_seq, &fx.err)
 	testing.expect_value(t, len(seq_rows), 2)
@@ -147,7 +160,46 @@ spec_layer1_reflect_create_table_append_slice_and_query_as :: proc(t: ^testing.T
 		testing.expect_value(t, seq_rows[1].id, i64(2))
 	}
 
-	// 7. V1 convenience wrapper (`duckdb.open`, `duckdb.exec`, `duckdb.sql_escape`, `duckdb.close`):
+	// 7. `duckdb:"...,json"` struct tag DDL, `append_slice` marshaling, and `query_as` unmarshaling:
+	json_ddl := duckdb.create_table_sql(Json_Tagged_Sensor, "json_sensors", true, context.temp_allocator)
+	testing.expect_value(t, json_ddl, "CREATE TABLE IF NOT EXISTS json_sensors (id BIGINT PRIMARY KEY, meta JSON)")
+	sqllogic_statement_ok(&fx, json_ddl)
+
+	tags_in := [2]string{"calib", "outdoor"}
+	json_batch := [1]Json_Tagged_Sensor{
+		{id = 99, meta = Sensor_Meta{firmware = "v2.4.1", tags = tags_in[:], gain = 1.75}},
+	}
+	expect_v2_ok(t, duckdb.append_slice(fx.conn, "json_sensors", json_batch[:], &fx.err), &fx.err)
+
+	json_rows, rc_json := duckdb.query_as(
+		fx.conn,
+		Json_Tagged_Sensor,
+		"SELECT id, meta FROM json_sensors WHERE id = $1",
+		context.temp_allocator,
+		&fx.err,
+		i64(99),
+	)
+	expect_v2_ok(t, rc_json, &fx.err)
+	testing.expect_value(t, len(json_rows), 1)
+	if len(json_rows) == 1 {
+		testing.expect_value(t, json_rows[0].id, i64(99))
+		testing.expect_value(t, json_rows[0].meta.firmware, "v2.4.1")
+		testing.expect_value(t, json_rows[0].meta.gain, f64(1.75))
+		expect_slice_equal(t, json_rows[0].meta.tags, tags_in[:])
+	}
+
+	// 8. Promoted V2 session & transaction helpers (`duckdb.v2_open`, `duckdb.v2_with_transaction`, `duckdb.v2_close`):
+	v2_db, v2_open_rc := duckdb.v2_open("", &fx.err)
+	expect_v2_ok(t, v2_open_rc, &fx.err)
+	defer _ = duckdb.v2_close(&v2_db)
+	expect_v2_ok(t, duckdb.v2_exec_drain(v2_db.conn, "CREATE TABLE v2_tx (x BIGINT)", nil, &fx.err), &fx.err)
+
+	tx_commit_cb :: proc(c: duckdb.V2_Connection_Handle, ud: rawptr, e: ^duckdb.V2_Error_Info_Handle) -> duckdb.V2_Error {
+		return duckdb.v2_exec_drain(c, "INSERT INTO v2_tx VALUES ($1)", nil, e, i64(777))
+	}
+	expect_v2_ok(t, duckdb.v2_with_transaction(v2_db.conn, tx_commit_cb, nil, &fx.err), &fx.err)
+
+	// 9. V1 convenience wrapper (`duckdb.open`, `duckdb.exec`, `duckdb.sql_escape`, `duckdb.close`):
 	v1_db, v1_err, v1_ok := duckdb.open("")
 	testing.expectf(t, v1_ok, "expected duckdb.open to succeed, got %s", v1_err)
 	if v1_ok {
@@ -346,6 +398,22 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 	duckdb.query_order_by(&q_exec, "region ASC")
 
 	expect_query_column(&fx, duckdb.query_to_sql(q_exec), []i64{40, 90})
+
+	// 4. Execute a parameterized `duckdb.Query` pipeline with `query_where_bind` & `query_execute_as`:
+	Event_Latency :: struct {
+		region:     string `duckdb:"region"`,
+		latency_ms: i64    `duckdb:"latency_ms"`,
+	}
+	q_bound := duckdb.query_from("events")
+	duckdb.query_select(&q_bound, "region", "latency_ms")
+	duckdb.query_where_bind(&q_bound, "region = $1 AND latency_ms >= $2", "eu", i64(20))
+	bound_rows, bound_rc := duckdb.query_execute_as(fx.conn, Event_Latency, q_bound, context.temp_allocator, &fx.err)
+	expect_v2_ok(t, bound_rc, &fx.err)
+	testing.expect_value(t, len(bound_rows), 1)
+	if len(bound_rows) == 1 {
+		testing.expect_value(t, bound_rows[0].region, "eu")
+		testing.expect_value(t, bound_rows[0].latency_ms, i64(40))
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -390,6 +458,19 @@ Telemetry_Event :: struct {
 }
 `
 	testing.expect_value(t, strings.trim_space(code), strings.trim_space(expected_code))
+
+	cue_code := duckdb.generate_cue_schema_code("schemas", "Telemetry_Event", cols[:], context.temp_allocator)
+	expected_cue := `package schemas
+
+#Telemetry_Event: {
+	event_id: int64
+	service: string
+	cpu_pct: number
+	ok: bool
+	raw_payload: bytes
+}
+`
+	testing.expect_value(t, strings.trim_space(cue_code), strings.trim_space(expected_cue))
 
 	// Sanitize complex/unsanitized column names (expressions, leading digits, spaces, Odin keywords) and `Maybe(...)` nullable fields:
 	dirty_cols := [4]duckdb.Column_Schema{

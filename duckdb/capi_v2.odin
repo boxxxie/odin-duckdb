@@ -21,6 +21,8 @@ package duckdb
 
 import "base:intrinsics"
 import "core:c"
+import "core:reflect"
+import "core:strings"
 
 when ODIN_OS == .Linux || ODIN_OS == .Darwin {
 	foreign import libduckdb "system:duckdb"
@@ -1545,4 +1547,349 @@ v2_quote_identifier :: proc(
 		return name
 	}
 	return string(buf[:int(length)])
+}
+
+// ----------------------------------------------------------------------------
+// High-Level C API v2 Session, Parameter Boxing, Execution & Transaction API
+// ----------------------------------------------------------------------------
+
+V2_Database :: struct {
+	env:      V2_Environment_Handle,
+	instance: V2_Instance_Handle,
+	conn:     V2_Connection_Handle,
+	factory:  V2_Factory_Handle,
+	path:     string,
+}
+
+// Opens a DuckDB 2.0 instance under `env`, attaches `path` (`""` for `:memory:`), and sets it as default.
+v2_open_instance :: proc(
+	env: V2_Environment_Handle,
+	path: string = "",
+	out_instance: ^V2_Instance_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	rc := duckdb_v2_instance_create(env, out_instance, err)
+	if rc != .NONE {
+		return rc
+	}
+	path_str := v2_str_from_string(path)
+	rc = duckdb_v2_instance_attach(out_instance^, nil, &path_str, nil, true, err)
+	if rc != .NONE {
+		duckdb_v2_instance_destroy(out_instance)
+	}
+	return rc
+}
+
+// Opens a self-contained `V2_Database` session (Environment, Instance, Connection, and Factory).
+v2_open :: proc(path: string = "", err: ^V2_Error_Info_Handle = nil) -> (db: V2_Database, rc: V2_Error) {
+	db.path = path
+	rc = duckdb_v2_environment_create(&db.env, err)
+	if rc != .NONE {
+		return db, rc
+	}
+	rc = v2_open_instance(db.env, path, &db.instance, err)
+	if rc != .NONE {
+		_ = duckdb_v2_environment_destroy(&db.env)
+		return db, rc
+	}
+	rc = duckdb_v2_connection_create(db.instance, &db.conn, err)
+	if rc != .NONE {
+		_ = duckdb_v2_instance_destroy(&db.instance)
+		_ = duckdb_v2_environment_destroy(&db.env)
+		return db, rc
+	}
+	rc = duckdb_v2_connection_get_factory(db.conn, &db.factory, err)
+	if rc != .NONE {
+		_ = v2_close(&db)
+	}
+	return db, rc
+}
+
+// Closes a `V2_Database` session in reverse lifecycle order (`conn` -> `instance` -> `env`).
+v2_close :: proc(db: ^V2_Database) -> V2_Error {
+	db.factory = nil
+	if db.conn != nil {
+		if rc := duckdb_v2_connection_destroy(&db.conn); rc != .NONE {
+			return rc
+		}
+	}
+	if db.instance != nil {
+		if rc := duckdb_v2_instance_destroy(&db.instance); rc != .NONE {
+			return rc
+		}
+	}
+	if db.env != nil {
+		if rc := duckdb_v2_environment_destroy(&db.env); rc != .NONE {
+			return rc
+		}
+	}
+	return .NONE
+}
+
+// Extracts and clones the error code and text from `err`, then destroys the error handle.
+v2_consume_error_text :: proc(
+	err: ^V2_Error_Info_Handle,
+	allocator := context.temp_allocator,
+) -> (code: V2_Error, message: string) {
+	if err == nil || err^ == nil {
+		return .NONE, ""
+	}
+	_ = duckdb_v2_error_info_get_code(err^, &code)
+	raw_str: V2_Str
+	_ = duckdb_v2_error_info_get_text(err^, &raw_str)
+	message = strings.clone(v2_str_to_string(raw_str), allocator)
+	_ = duckdb_v2_error_info_destroy(err)
+	return code, message
+}
+
+// Boxes an arbitrary Odin scalar, `string`, `[]u8`, `V2_Hugeint`, `V2_Uhugeint`, `V2_Interval`,
+// `Maybe(T)`, or `nil` into a `V2_Value_Handle` for parameterized query execution.
+v2_create_value_from_any :: proc(
+	factory: V2_Factory_Handle,
+	arg: any,
+	out_val: ^V2_Value_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_val != nil {
+		out_val^ = nil
+	}
+	if arg == nil || arg.data == nil {
+		sql_null_type: V2_Logical_Type_Handle
+		if rc := duckdb_v2_factory_create_type_from_id(factory, .SQLNULL, nil, nil, 0, &sql_null_type, err); rc != .NONE {
+			return rc
+		}
+		defer duckdb_v2_logical_type_destroy(&sql_null_type)
+		return duckdb_v2_value_create_null(factory, sql_null_type, out_val, err)
+	}
+
+	ti := reflect.type_info_base(type_info_of(arg.id))
+	if u, is_u := ti.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
+		sub := reflect.get_union_variant(arg)
+		if sub == nil {
+			_, tid, ok := odin_type_to_duckdb_sql(u.variants[0])
+			if !ok {
+				tid = .SQLNULL
+			}
+			null_t: V2_Logical_Type_Handle
+			if rc := duckdb_v2_factory_create_type_from_id(factory, tid, nil, nil, 0, &null_t, err); rc != .NONE {
+				return rc
+			}
+			defer duckdb_v2_logical_type_destroy(&null_t)
+			return duckdb_v2_value_create_null(factory, null_t, out_val, err)
+		}
+		return v2_create_value_from_any(factory, sub, out_val, err)
+	}
+
+	switch v in arg {
+	case V2_Value_Handle:
+		out_val^ = v
+		return .NONE
+	case V2_Hugeint:
+		tmp := v
+		return duckdb_v2_value_create_hugeint(factory, &tmp, out_val, err)
+	case V2_Uhugeint:
+		tmp := v
+		return duckdb_v2_value_create_uhugeint(factory, &tmp, out_val, err)
+	case V2_Interval:
+		tmp := v
+		return duckdb_v2_value_create_interval(factory, &tmp, out_val, err)
+	case []u8:
+		s := V2_Str{ptr = raw_data(v), len = V2_Idx(len(v))}
+		return duckdb_v2_value_create_blob(factory, &s, out_val, err)
+	}
+
+	#partial switch v in ti.variant {
+	case reflect.Type_Info_Boolean:
+		return duckdb_v2_value_create_bool(factory, (cast(^bool)arg.data)^, out_val, err)
+	case reflect.Type_Info_Integer:
+		if v.signed {
+			switch ti.size {
+			case 1:
+				return duckdb_v2_value_create_tinyint(factory, (cast(^i8)arg.data)^, out_val, err)
+			case 2:
+				return duckdb_v2_value_create_smallint(factory, (cast(^i16)arg.data)^, out_val, err)
+			case 4:
+				return duckdb_v2_value_create_int(factory, (cast(^i32)arg.data)^, out_val, err)
+			case 8:
+				return duckdb_v2_value_create_bigint(factory, (cast(^i64)arg.data)^, out_val, err)
+			}
+		} else {
+			switch ti.size {
+			case 1:
+				return duckdb_v2_value_create_utinyint(factory, (cast(^u8)arg.data)^, out_val, err)
+			case 2:
+				return duckdb_v2_value_create_usmallint(factory, (cast(^u16)arg.data)^, out_val, err)
+			case 4:
+				return duckdb_v2_value_create_uint(factory, (cast(^u32)arg.data)^, out_val, err)
+			case 8:
+				return duckdb_v2_value_create_ubigint(factory, (cast(^u64)arg.data)^, out_val, err)
+			}
+		}
+	case reflect.Type_Info_Float:
+		switch ti.size {
+		case 4:
+			return duckdb_v2_value_create_float(factory, (cast(^f32)arg.data)^, out_val, err)
+		case 8:
+			return duckdb_v2_value_create_double(factory, (cast(^f64)arg.data)^, out_val, err)
+		}
+	case reflect.Type_Info_String:
+		if v.is_cstring {
+			cs := (cast(^cstring)arg.data)^
+			s := v2_str_from_string(string(cs))
+			return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
+		}
+		s := v2_str_from_string((cast(^string)arg.data)^)
+		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
+	}
+
+	return .INPUT_INVALID
+}
+
+// Parses a single SQL statement from `sql` into `out_stmt`.
+v2_parse_single_stmt :: proc(
+	conn: V2_Connection_Handle,
+	sql: string,
+	out_stmt: ^V2_Sql_Statement_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_stmt != nil {
+		out_stmt^ = nil
+	}
+	sql_cstr := strings.clone_to_cstring(sql, context.temp_allocator)
+	iter: V2_Statement_Iterator_Handle
+	rc := duckdb_v2_parse_sql(conn, sql_cstr, &iter, err)
+	if rc != .NONE {
+		return rc
+	}
+	defer duckdb_v2_statement_iterator_destroy(&iter)
+	return duckdb_v2_statement_iterator_next(iter, out_stmt, err)
+}
+
+// Parses and executes a single SQL statement with optional positional `args` (`..any`).
+v2_query :: proc(
+	conn: V2_Connection_Handle,
+	sql: string,
+	out_result: ^V2_Result_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+	args: ..any,
+) -> V2_Error {
+	if out_result != nil {
+		out_result^ = nil
+	}
+	stmt: V2_Sql_Statement_Handle
+	rc := v2_parse_single_stmt(conn, sql, &stmt, err)
+	if rc != .NONE || stmt == nil {
+		return rc
+	}
+	defer duckdb_v2_sql_statement_destroy(&stmt)
+
+	if len(args) == 0 {
+		return duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, out_result, err)
+	}
+
+	factory: V2_Factory_Handle
+	if rc = duckdb_v2_connection_get_factory(conn, &factory, err); rc != .NONE {
+		return rc
+	}
+
+	vals := make([]V2_Value_Handle, len(args), context.temp_allocator)
+	defer {
+		for &v in vals {
+			if v != nil {
+				duckdb_v2_value_destroy(&v)
+			}
+		}
+	}
+
+	for a, idx in args {
+		if rc = v2_create_value_from_any(factory, a, &vals[idx], err); rc != .NONE {
+			return rc
+		}
+	}
+
+	return duckdb_v2_statement_execute(conn, stmt, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
+}
+
+// Executes a DDL/DML statement to completion via `duckdb_v2_result_drain` with optional positional `args`.
+v2_exec_drain :: proc(
+	conn: V2_Connection_Handle,
+	sql: string,
+	out_rows_changed: ^V2_Idx = nil,
+	err: ^V2_Error_Info_Handle = nil,
+	args: ..any,
+) -> V2_Error {
+	result: V2_Result_Handle
+	rc := v2_query(conn, sql, &result, err, ..args)
+	if rc != .NONE {
+		return rc
+	}
+	defer duckdb_v2_result_destroy(&result)
+
+	changed: V2_Idx
+	rc = duckdb_v2_result_drain(result, &changed, err)
+	if out_rows_changed != nil {
+		out_rows_changed^ = changed
+	}
+	return rc
+}
+
+// Steps a streaming `V2_Result_Handle` to its next chunk, waiting on `WAITING` via `duckdb_v2_result_wait`.
+v2_step_chunk :: proc(
+	result: V2_Result_Handle,
+	out_chunk: ^V2_Data_Chunk_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> (status: V2_Result_Step_Status, rc: V2_Error) {
+	for {
+		out_chunk^ = nil
+		rc = duckdb_v2_result_step(result, out_chunk, &status, err)
+		if rc != .NONE {
+			return status, rc
+		}
+		switch status {
+		case .CHUNK, .FINISHED, .CANCELLED:
+			return status, .NONE
+		case .WAITING:
+			rc = duckdb_v2_result_wait(result, err)
+			if rc != .NONE {
+				return status, rc
+			}
+		}
+	}
+}
+
+// Parses and prepares a single SQL statement on `conn`.
+v2_prepare :: proc(
+	conn: V2_Connection_Handle,
+	sql: string,
+	require_cacheable: bool = false,
+	out_prepared: ^V2_Prepared_Statement_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_prepared != nil {
+		out_prepared^ = nil
+	}
+	stmt: V2_Sql_Statement_Handle
+	rc := v2_parse_single_stmt(conn, sql, &stmt, err)
+	if rc != .NONE || stmt == nil {
+		return rc
+	}
+	defer duckdb_v2_sql_statement_destroy(&stmt)
+	return duckdb_v2_prepared_statement_create(conn, stmt, require_cacheable, out_prepared, err)
+}
+
+// Executes `body` inside a `BEGIN TRANSACTION ... COMMIT` block, automatically issuing `ROLLBACK` on error.
+v2_with_transaction :: proc(
+	conn: V2_Connection_Handle,
+	body: proc(conn: V2_Connection_Handle, user_data: rawptr, err: ^V2_Error_Info_Handle) -> V2_Error,
+	user_data: rawptr = nil,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if rc := v2_exec_drain(conn, "BEGIN TRANSACTION", nil, err); rc != .NONE {
+		return rc
+	}
+	if rc := body(conn, user_data, err); rc != .NONE {
+		_ = v2_exec_drain(conn, "ROLLBACK", nil, nil)
+		return rc
+	}
+	return v2_exec_drain(conn, "COMMIT", nil, err)
 }

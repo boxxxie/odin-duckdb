@@ -23,16 +23,7 @@ driver_open_instance :: proc(
 	out_instance: ^duckdb.V2_Instance_Handle,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> duckdb.V2_Error {
-	rc := duckdb.duckdb_v2_instance_create(env, out_instance, err)
-	if rc != .NONE {
-		return rc
-	}
-	path_str := duckdb.v2_str_from_string(path)
-	rc = duckdb.duckdb_v2_instance_attach(out_instance^, nil, &path_str, nil, true, err)
-	if rc != .NONE {
-		duckdb.duckdb_v2_instance_destroy(out_instance)
-	}
-	return rc
+	return duckdb.v2_open_instance(env, path, out_instance, err)
 }
 
 // Parses a single SQL statement from `sql` into `out_stmt`.
@@ -43,19 +34,7 @@ driver_parse_single_stmt :: proc(
 	out_stmt: ^duckdb.V2_Sql_Statement_Handle,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> duckdb.V2_Error {
-	if out_stmt != nil {
-		out_stmt^ = nil
-	}
-	sql_cstr := strings.clone_to_cstring(sql, context.temp_allocator)
-
-	iter: duckdb.V2_Statement_Iterator_Handle
-	rc := duckdb.duckdb_v2_parse_sql(conn, sql_cstr, &iter, err)
-	if rc != .NONE {
-		return rc
-	}
-	defer duckdb.duckdb_v2_statement_iterator_destroy(&iter)
-
-	return duckdb.duckdb_v2_statement_iterator_next(iter, out_stmt, err)
+	return duckdb.v2_parse_single_stmt(conn, sql, out_stmt, err)
 }
 
 // Parses and executes a single SQL statement on `conn`, returning the streaming result handle.
@@ -66,17 +45,7 @@ driver_query :: proc(
 	out_result: ^duckdb.V2_Result_Handle,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> duckdb.V2_Error {
-	if out_result != nil {
-		out_result^ = nil
-	}
-	stmt: duckdb.V2_Sql_Statement_Handle
-	rc := driver_parse_single_stmt(conn, sql, &stmt, err)
-	if rc != .NONE || stmt == nil {
-		return rc
-	}
-	defer duckdb.duckdb_v2_sql_statement_destroy(&stmt)
-
-	return duckdb.duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, out_result, err)
+	return duckdb.v2_query(conn, sql, out_result, err)
 }
 
 // Executes a side-effecting SQL statement (DDL/DML) to completion via `duckdb_v2_result_drain`
@@ -88,19 +57,7 @@ driver_exec_drain :: proc(
 	out_rows_changed: ^duckdb.V2_Idx = nil,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> duckdb.V2_Error {
-	result: duckdb.V2_Result_Handle
-	rc := driver_query(conn, sql, &result, err)
-	if rc != .NONE {
-		return rc
-	}
-	defer duckdb.duckdb_v2_result_destroy(&result)
-
-	changed: duckdb.V2_Idx
-	rc = duckdb.duckdb_v2_result_drain(result, &changed, err)
-	if out_rows_changed != nil {
-		out_rows_changed^ = changed
-	}
-	return rc
+	return duckdb.v2_exec_drain(conn, sql, out_rows_changed, err)
 }
 
 // Steps a streaming `V2_Result_Handle` to its next chunk, blocking on `WAITING` via `duckdb_v2_result_wait`.
@@ -110,22 +67,7 @@ driver_step_chunk :: proc(
 	out_chunk: ^duckdb.V2_Data_Chunk_Handle,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> (status: duckdb.V2_Result_Step_Status, rc: duckdb.V2_Error) {
-	for {
-		out_chunk^ = nil
-		rc = duckdb.duckdb_v2_result_step(result, out_chunk, &status, err)
-		if rc != .NONE {
-			return status, rc
-		}
-		switch status {
-		case .CHUNK, .FINISHED, .CANCELLED:
-			return status, .NONE
-		case .WAITING:
-			rc = duckdb.duckdb_v2_result_wait(result, err)
-			if rc != .NONE {
-				return status, rc
-			}
-		}
-	}
+	return duckdb.v2_step_chunk(result, out_chunk, err)
 }
 
 // Generic two-call buffer sizing helper for C API v2 string rendering functions.
@@ -181,15 +123,7 @@ driver_consume_error_text :: proc(
 	err: ^duckdb.V2_Error_Info_Handle,
 	allocator := context.temp_allocator,
 ) -> (code: duckdb.V2_Error, message: string) {
-	if err == nil || err^ == nil {
-		return .NONE, ""
-	}
-	_ = duckdb.duckdb_v2_error_info_get_code(err^, &code)
-	raw_str: duckdb.V2_Str
-	_ = duckdb.duckdb_v2_error_info_get_text(err^, &raw_str)
-	message = strings.clone(duckdb.v2_str_to_string(raw_str), allocator)
-	_ = duckdb.duckdb_v2_error_info_destroy(err)
-	return code, message
+	return duckdb.v2_consume_error_text(err, allocator)
 }
 
 // Parses a single SQL statement and prepares it on `conn`.
@@ -201,17 +135,7 @@ driver_prepare :: proc(
 	out_prepared: ^duckdb.V2_Prepared_Statement_Handle,
 	err: ^duckdb.V2_Error_Info_Handle = nil,
 ) -> duckdb.V2_Error {
-	if out_prepared != nil {
-		out_prepared^ = nil
-	}
-	stmt: duckdb.V2_Sql_Statement_Handle
-	rc := driver_parse_single_stmt(conn, sql, &stmt, err)
-	if rc != .NONE || stmt == nil {
-		return rc
-	}
-	defer duckdb.duckdb_v2_sql_statement_destroy(&stmt)
-
-	return duckdb.duckdb_v2_prepared_statement_create(conn, stmt, require_cacheable, out_prepared, err)
+	return duckdb.v2_prepare(conn, sql, require_cacheable, out_prepared, err)
 }
 
 // Generic collector that drains all rows of column `col_idx` from `result` as `[]T` and destroys `result`.
