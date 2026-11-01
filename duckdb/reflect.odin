@@ -42,7 +42,7 @@ Struct_Field_Mapping :: struct {
 // Unwraps `Maybe(T)` (`union #maybe {T}`) if present and returns `(inner_type, is_maybe)`.
 unwrap_maybe_type :: proc(ti: ^reflect.Type_Info) -> (^reflect.Type_Info, bool) {
 	base := reflect.type_info_base(ti)
-	if u, is_u := base.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 {
+	if u, is_u := base.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
 		return u.variants[0], true
 	}
 	return ti, false
@@ -51,6 +51,14 @@ unwrap_maybe_type :: proc(ti: ^reflect.Type_Info) -> (^reflect.Type_Info, bool) 
 // Maps an Odin `reflect.Type_Info` to its canonical DuckDB 2.0 SQL type name and `V2_Logical_Type_Id`.
 odin_type_to_duckdb_sql :: proc(ti: ^reflect.Type_Info) -> (sql_type: string, type_id: V2_Logical_Type_Id, ok: bool) {
 	unwrapped, _ := unwrap_maybe_type(ti)
+	switch unwrapped.id {
+	case V2_Hugeint:
+		return "HUGEINT", .HUGEINT, true
+	case V2_Uhugeint:
+		return "UHUGEINT", .UHUGEINT, true
+	case V2_Interval:
+		return "INTERVAL", .INTERVAL, true
+	}
 	base := reflect.type_info_base(unwrapped)
 	#partial switch v in base.variant {
 	case reflect.Type_Info_Boolean:
@@ -340,6 +348,12 @@ append_slice :: proc(
 					(cast([^]f32)raw)[r_idx] = (cast(^f32)val_ptr)^
 				case .DOUBLE:
 					(cast([^]f64)raw)[r_idx] = (cast(^f64)val_ptr)^
+				case .HUGEINT:
+					(cast([^]V2_Hugeint)raw)[r_idx] = (cast(^V2_Hugeint)val_ptr)^
+				case .UHUGEINT:
+					(cast([^]V2_Uhugeint)raw)[r_idx] = (cast(^V2_Uhugeint)val_ptr)^
+				case .INTERVAL:
+					(cast([^]V2_Interval)raw)[r_idx] = (cast(^V2_Interval)val_ptr)^
 				case .VARCHAR:
 					s := (cast(^string)val_ptr)^
 					if rc := v2_vector_assign_string(vec, V2_Idx(r_idx), s, err); rc != .NONE {
@@ -466,6 +480,7 @@ query_as :: proc(
 	for i := 0; i < int(schema_col_count); i += 1 {
 		col_to_field[i] = -1
 	}
+	field_claimed := make([]bool, len(active_fields), context.temp_allocator)
 
 	for col_idx: V2_Idx = 0; col_idx < schema_col_count; col_idx += 1 {
 		col_name_ident: V2_Identifier
@@ -490,6 +505,11 @@ query_as :: proc(
 			}
 		}
 
+		// Positional fallback when result column is unaliased (no name match) and the positional struct field is unclaimed:
+		if matched_field_idx < 0 && int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
+			matched_field_idx = int(col_idx)
+		}
+
 		if matched_field_idx >= 0 {
 			f := active_fields[matched_field_idx]
 			if col_type_id != f.type_id {
@@ -508,6 +528,7 @@ query_as :: proc(
 				return out, .INPUT_INVALID
 			}
 			col_to_field[int(col_idx)] = matched_field_idx
+			field_claimed[matched_field_idx] = true
 		}
 	}
 
@@ -549,7 +570,7 @@ query_as :: proc(
 			if rc != .NONE {
 				return out, rc
 			}
-			rc = duckdb_v2_vector_get_view(vec, &views[col_idx], err)
+			rc = v2_vector_get_readable_view(vec, &views[col_idx], err)
 			if rc != .NONE {
 				return out, rc
 			}
@@ -595,6 +616,12 @@ query_as :: proc(
 					(cast(^f32)field_ptr)^ = (cast([^]f32)view.data)[phys]
 				case .DOUBLE:
 					(cast(^f64)field_ptr)^ = (cast([^]f64)view.data)[phys]
+				case .HUGEINT:
+					(cast(^V2_Hugeint)field_ptr)^ = (cast([^]V2_Hugeint)view.data)[phys]
+				case .UHUGEINT:
+					(cast(^V2_Uhugeint)field_ptr)^ = (cast([^]V2_Uhugeint)view.data)[phys]
+				case .INTERVAL:
+					(cast(^V2_Interval)field_ptr)^ = (cast([^]V2_Interval)view.data)[phys]
 				case .VARCHAR:
 					b_ptr := &((cast([^]V2_Bytes)view.data)[phys])
 					(cast(^string)field_ptr)^ = strings.clone(v2_bytes_to_string(b_ptr), allocator)

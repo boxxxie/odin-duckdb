@@ -190,7 +190,7 @@ CREATE TABLE cluster_nodes (name VARCHAR, region VARCHAR, active BOOLEAN);
 statement ok
 INSERT INTO cluster_nodes VALUES ('node-a', 'eu-west-1', true), ('node-b', 'us-east-1', false);
 
-query TT
+query TT rowsort conn_cluster
 SELECT name, region
 FROM cluster_nodes
 
@@ -200,12 +200,18 @@ ORDER BY name;
 node-a	eu-west-1
 
 statement error
-SELECT * FROM missing_quack_table;
+SELECT *
+
+FROM missing_quack_table;
 ----
 missing_quack_table
 `
 	parsed := duckdb.sqllogic_parse_script(script, context.temp_allocator)
 	testing.expect_value(t, len(parsed), 4)
+	if len(parsed) == 4 {
+		testing.expect_value(t, parsed[2].sort_mode, "rowsort")
+		testing.expect_value(t, parsed[2].connection_id, "conn_cluster")
+	}
 	for d in parsed {
 		#partial switch d.kind {
 		case .STATEMENT_OK:

@@ -293,6 +293,18 @@ sqllogic_parse_script :: proc(
 			conn_id := parts[2] if len(parts) >= 3 else ""
 			i += 1
 
+			has_separator := false
+			for j := i; j < len(lines); j += 1 {
+				tj := strings.trim_space(lines[j])
+				if tj == "----" {
+					has_separator = true
+					break
+				}
+				if is_sqllogic_directive_start(tj) {
+					break
+				}
+			}
+
 			sql_b := strings.builder_make(allocator)
 			in_expected := false
 			exp_b := strings.builder_make(allocator)
@@ -300,7 +312,7 @@ sqllogic_parse_script :: proc(
 			for i < len(lines) {
 				raw_l := lines[i]
 				trimmed_l := strings.trim_space(raw_l)
-				if len(trimmed_l) == 0 {
+				if (in_expected || !has_separator) && len(trimmed_l) == 0 {
 					i += 1
 					break
 				}
@@ -340,11 +352,11 @@ sqllogic_parse_script :: proc(
 			col_sig := parts[1] if len(parts) >= 2 else "I"
 			sort_mode := "nosort"
 			conn_id := ""
-			if len(parts) >= 3 {
-				if parts[2] == "nosort" || parts[2] == "rowsort" || parts[2] == "valuesort" {
-					sort_mode = parts[2]
+			for p in parts[2:] {
+				if p == "nosort" || p == "rowsort" || p == "valuesort" {
+					sort_mode = p
 				} else {
-					conn_id = parts[2]
+					conn_id = p
 				}
 			}
 			i += 1

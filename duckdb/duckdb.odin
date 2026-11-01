@@ -4,7 +4,11 @@ import "core:c"
 import "core:fmt"
 import "core:strings"
 
-foreign import duckdb_lib "system:duckdb"
+when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+	foreign import duckdb_lib "system:duckdb"
+} else when ODIN_OS == .Windows {
+	foreign import duckdb_lib "duckdb.lib"
+}
 
 // ============================================================================
 // Low-Level C API Types (/usr/include/duckdb.h)

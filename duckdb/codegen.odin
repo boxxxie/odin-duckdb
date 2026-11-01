@@ -29,7 +29,11 @@ introspect_table_schema :: proc(
 ) -> (cols: [dynamic]Column_Schema, rc: V2_Error) {
 	cols = make([dynamic]Column_Schema, allocator)
 
-	c_sql := fmt.ctprintf("SELECT * FROM %s LIMIT 0", table_or_source)
+	source_expr := table_or_source
+	if !strings.contains_any(table_or_source, "() '\"\t\n") {
+		source_expr = v2_quote_identifier(table_or_source, true, context.temp_allocator)
+	}
+	c_sql := fmt.ctprintf("SELECT * FROM %s LIMIT 0", source_expr)
 	iter: V2_Statement_Iterator_Handle
 	rc = duckdb_v2_parse_sql(conn, c_sql, &iter, err)
 	if rc != .NONE {
@@ -83,7 +87,7 @@ introspect_table_schema :: proc(
 				name     = strings.clone(v2_str_to_string(fname), allocator),
 				sql_type = strings.clone(sql_type_str, allocator),
 				type_id  = tid,
-				nullable = true,
+				nullable = false,
 			},
 		)
 	}
@@ -116,8 +120,16 @@ duckdb_type_id_to_odin_type :: proc(type_id: V2_Logical_Type_Id) -> string {
 		return "f32"
 	case .DOUBLE:
 		return "f64"
-	case .VARCHAR, .BLOB:
+	case .VARCHAR:
 		return "string"
+	case .BLOB:
+		return "[]u8"
+	case .DATE:
+		return "i32"
+	case .TIME, .TIME_NS, .TIMESTAMP, .TIMESTAMP_SEC, .TIMESTAMP_MS, .TIMESTAMP_NS, .TIMESTAMP_TZ, .TIMESTAMP_TZ_NS:
+		return "i64"
+	case .TIME_TZ:
+		return "u64"
 	case .HUGEINT, .UUID:
 		return "duckdb.V2_Hugeint"
 	case .UHUGEINT:
@@ -192,6 +204,9 @@ generate_odin_struct_code :: proc(
 	for col, idx in columns {
 		field_ident := sanitize_odin_identifier(col.name, idx, allocator)
 		odin_t := duckdb_type_id_to_odin_type(col.type_id)
+		if col.nullable {
+			odin_t = fmt.aprintf("Maybe(%s)", odin_t, allocator = allocator)
+		}
 		escaped_tag, _ := strings.replace_all(col.name, `\`, `\\`, allocator)
 		escaped_tag, _ = strings.replace_all(escaped_tag, `"`, `\"`, allocator)
 		fmt.sbprintf(&b, "\t%s: %s `duckdb:\"%s\"`,\n", field_ident, odin_t, escaped_tag)

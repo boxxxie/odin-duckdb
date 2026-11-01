@@ -5,7 +5,7 @@ package duckdb
 // ============================================================================
 // Authoritative Upstream References:
 // - Header Specification:
-//   - `/home/pauli/.local/include/duckdb_v2.h`
+//   - `duckdb_v2.h`
 //   - `references/c/duckdb-capi-2.0/src/include/duckdb_v2.h`
 // - Declarative YAML Specs:
 //   - `references/c/duckdb-capi-2.0/api_spec/v2/`
@@ -19,8 +19,8 @@ package duckdb
 //   - `references/node/duckdb-node-neo/tools/capi-v2/smoke_v2.c`
 // ============================================================================
 
+import "base:intrinsics"
 import "core:c"
-import "core:mem"
 
 when ODIN_OS == .Linux || ODIN_OS == .Darwin {
 	foreign import libduckdb "system:duckdb"
@@ -619,7 +619,7 @@ V2_Table_Partition_Kind :: enum c.int {
 }
 
 // ----------------------------------------------------------------------------
-// Foreign C API v2 Declarations (`/home/pauli/.local/include/duckdb_v2.h`)
+// Foreign C API v2 Declarations (`duckdb_v2.h`)
 // ----------------------------------------------------------------------------
 
 @(default_calling_convention = "c")
@@ -1433,11 +1433,11 @@ arrow_stream_release :: proc "contextless" (stream: ^Arrow_Array_Stream) {
 }
 
 // Assembles a `V2_Bytes` in a vector's arena (`test_capi_v2.hpp` lines 216-250, 518-536):
-v2_vector_assign_string :: proc(vec: V2_Vector_Handle, index: V2_Idx, s: string, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
+v2_vector_assign_string :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, s: string, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
 	return v2_vector_assign_bytes(vec, index, transmute([]u8)s, err)
 }
 
-v2_vector_assign_bytes :: proc(vec: V2_Vector_Handle, index: V2_Idx, data: []u8, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
+v2_vector_assign_bytes :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, data: []u8, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
 	arena: V2_Arena_Handle
 	rc := duckdb_v2_vector_get_arena(vec, &arena, err)
 	if rc != .NONE {
@@ -1448,7 +1448,7 @@ v2_vector_assign_bytes :: proc(vec: V2_Vector_Handle, index: V2_Idx, data: []u8,
 	if len(data) <= V2_BYTES_INLINE_LENGTH {
 		storage.inlined.length = u32(len(data))
 		if len(data) > 0 {
-			mem.copy(&storage.inlined.inlined[0], raw_data(data), len(data))
+			intrinsics.mem_copy(&storage.inlined.inlined[0], raw_data(data), len(data))
 		}
 	} else {
 		bytes_ptr: [^]u8
@@ -1456,10 +1456,10 @@ v2_vector_assign_bytes :: proc(vec: V2_Vector_Handle, index: V2_Idx, data: []u8,
 		if rc != .NONE {
 			return rc
 		}
-		mem.copy(bytes_ptr, raw_data(data), len(data))
+		intrinsics.mem_copy(bytes_ptr, raw_data(data), len(data))
 		storage.pointer.length = u32(len(data))
 		storage.pointer.ptr = bytes_ptr
-		mem.copy(&storage.pointer.prefix[0], bytes_ptr, 4)
+		intrinsics.mem_copy(&storage.pointer.prefix[0], bytes_ptr, 4)
 	}
 
 	raw: rawptr
@@ -1470,6 +1470,25 @@ v2_vector_assign_bytes :: proc(vec: V2_Vector_Handle, index: V2_Idx, data: []u8,
 	arr := cast([^]V2_Bytes)raw
 	arr[index] = storage
 	return .NONE
+}
+
+// Obtains a readable `V2_Vector_View` for `vec`, automatically flattening `.OTHER`
+// encodings (`SEQUENCE`, `FSST`, `SHREDDED`) first so `duckdb_v2_vector_get_view` succeeds.
+v2_vector_get_readable_view :: proc "contextless" (
+	vec: V2_Vector_Handle,
+	out_view: ^V2_Vector_View,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	vtype: V2_Vector_Type
+	if rc := duckdb_v2_vector_get_vector_type(vec, &vtype, err); rc != .NONE {
+		return rc
+	}
+	if vtype == .OTHER {
+		if rc := duckdb_v2_vector_flatten(vec, err); rc != .NONE {
+			return rc
+		}
+	}
+	return duckdb_v2_vector_get_view(vec, out_view, err)
 }
 
 // Two-call buffer sizing protocol (`duckdb_v2.h` `FillCallerText` convention:

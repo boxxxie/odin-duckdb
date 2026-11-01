@@ -7,7 +7,7 @@ package duckdb_tests
 // MultiFileFunction & Transactional Registration suites:
 // 1. `references/c/duckdb-capi-2.0/test/api/capi/v2/test_capi_v2_expression.cpp`
 // 2. `references/c/duckdb-capi-2.0/test/api/capi/v2/test_capi_v2_registration.cpp`
-// 3. `/home/pauli/.local/include/duckdb_v2.h` (`MODULE: macro`, `MODULE: table` multi-file)
+// 3. `duckdb_v2.h` (`MODULE: macro`, `MODULE: table` multi-file)
 // ============================================================================
 
 import "base:runtime"

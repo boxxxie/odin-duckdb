@@ -66,12 +66,14 @@ query_from :: proc(table: string, allocator := context.temp_allocator) -> Query 
 }
 
 query_from_quack :: proc(attach_alias: string, table: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("%s.%s", attach_alias, table, allocator = allocator), allocator)
+	quoted_alias := v2_quote_identifier(attach_alias, false, allocator)
+	quoted_table := v2_quote_identifier(table, true, allocator)
+	return query_from(fmt.aprintf("%s.%s", quoted_alias, quoted_table, allocator = allocator), allocator)
 }
 
 query_from_quack_rpc :: proc(attach_alias: string, remote_sql: string, allocator := context.temp_allocator) -> Query {
-	escaped, _ := strings.replace_all(remote_sql, "'", "''", allocator)
-	return query_from(fmt.aprintf("%s.query('%s')", attach_alias, escaped, allocator = allocator), allocator)
+	quoted_alias := v2_quote_identifier(attach_alias, false, allocator)
+	return query_from(fmt.aprintf("%s.query('%s')", quoted_alias, sql_escape(remote_sql, allocator), allocator = allocator), allocator)
 }
 
 query_from_parquet :: proc(path_glob: string, allocator := context.temp_allocator) -> Query {
@@ -173,26 +175,6 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 
 	if len(q.projections) == 0 {
 		strings.write_byte(&b, '*')
-		if len(q.excludes) > 0 {
-			strings.write_string(&b, " EXCLUDE (")
-			for c, i in q.excludes {
-				if i > 0 {
-					strings.write_string(&b, ", ")
-				}
-				strings.write_string(&b, c)
-			}
-			strings.write_byte(&b, ')')
-		}
-		if len(q.replaces) > 0 {
-			strings.write_string(&b, " REPLACE (")
-			for r, i in q.replaces {
-				if i > 0 {
-					strings.write_string(&b, ", ")
-				}
-				strings.write_string(&b, r)
-			}
-			strings.write_byte(&b, ')')
-		}
 	} else {
 		for c, i in q.projections {
 			if i > 0 {
@@ -200,6 +182,26 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 			}
 			strings.write_string(&b, c)
 		}
+	}
+	if len(q.excludes) > 0 {
+		strings.write_string(&b, " EXCLUDE (")
+		for c, i in q.excludes {
+			if i > 0 {
+				strings.write_string(&b, ", ")
+			}
+			strings.write_string(&b, c)
+		}
+		strings.write_byte(&b, ')')
+	}
+	if len(q.replaces) > 0 {
+		strings.write_string(&b, " REPLACE (")
+		for r, i in q.replaces {
+			if i > 0 {
+				strings.write_string(&b, ", ")
+			}
+			strings.write_string(&b, r)
+		}
+		strings.write_byte(&b, ')')
 	}
 
 	fmt.sbprintf(&b, " FROM %s", q.source)

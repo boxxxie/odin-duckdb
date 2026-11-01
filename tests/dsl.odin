@@ -4,7 +4,7 @@ package duckdb_tests
 // Layer 2: Domain-Specific Language (`tests/dsl.odin`)
 // ============================================================================
 // Architecture Reference:
-// - 4-Layer ATDD Architecture (`/home/pauli/.gemini/config/skills/atdd-executable-specifications/SKILL.md`)
+// - 4-Layer ATDD Architecture (Executable Specifications, DSL, Protocol Drivers, SUT)
 // - Upstream Reference Fixtures:
 //   - `test_capi_v2::EnvFixture` (`references/c/duckdb-capi-2.0/test/api/capi/v2/test_capi_v2.hpp` lines 71-94)
 //   - `test_cpp_api_core.cpp` lines 37-64 (`Environment::GetInstanceCount()` zero-leak contract)

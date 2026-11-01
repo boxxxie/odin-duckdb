@@ -14,10 +14,10 @@ An ergonomic, zero-overhead **DuckDB 2.0** library, **Quack protocol** client/se
    - **Composable Query Builder DSL:** Type-safe relational pipeline construction (`from`, `select`, `where`, `join`, `order_by`, `limit`) with automatic `$1, $2` parameter binding.
    - **Compile-Time Schema Codegen:** Inspecting `.duckdb`, CSV, JSON, and Parquet sources to emit static Odin structs and CUE schemas (`sources_gen.cue`, `schema_gen.odin`).
 
-## Conductor Tracks
+## Architecture Overview
 
-- **[Track 1: DuckDB 2.0, Quack Protocol & Odin DSL Research & Architecture](conductor/tracks/track1_duckdb2_research_and_dsl/spec.md)**
-  - Comprehensive resource compendium and architectural design referencing the C API (`/usr/include/duckdb.h`), Rust (`duckdb-rs` & `llim` Quack server store), Elixir (`duckdbex` & `quackdb`), and existing Odin bindings.
+- **3-Layer Odin DuckDB 2.0 Stack:** Combines C API v2 bindings (`duckdb/capi_v2.odin`), `core:reflect` struct mapping & bulk `ColumnDataCollection` ingestion (`duckdb/reflect.odin`), composable Friendly SQL & Quack RPC query building (`duckdb/dsl.odin`, `duckdb/quack.odin`), and zero-execution schema codegen (`duckdb/codegen.odin`).
+- **4-Layer ATDD Executable Specifications:** Full C API v2, Arrow C Data Interface, Quack protocol, and DSL test coverage under `tests/`.
 
 ## Verification
 

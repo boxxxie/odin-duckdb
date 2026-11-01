@@ -129,7 +129,25 @@ spec_layer1_reflect_create_table_append_slice_and_query_as :: proc(t: ^testing.T
 		testing.expect_value(t, kw_rows[0].select, "quoted_ok")
 	}
 
-	// 6. V1 convenience wrapper (`duckdb.open`, `duckdb.exec`, `duckdb.sql_escape`, `duckdb.close`):
+	// 6. Positional column fallback + `.OTHER` (`SEQUENCE` from `range()`) vector flattening in `query_as`:
+	seq_rows, rc_seq := duckdb.query_as(
+		fx.conn,
+		Sensor_Reading,
+		"SELECT i, 'seq_sensor', 55::INTEGER, true FROM range(1, 3) t(i)",
+		context.temp_allocator,
+		&fx.err,
+	)
+	expect_v2_ok(t, rc_seq, &fx.err)
+	testing.expect_value(t, len(seq_rows), 2)
+	if len(seq_rows) == 2 {
+		testing.expect_value(t, seq_rows[0].id, i64(1))
+		testing.expect_value(t, seq_rows[0].sensor_id, "seq_sensor")
+		testing.expect_value(t, seq_rows[0].reading_mv, i32(55))
+		testing.expect_value(t, seq_rows[0].calibrated, true)
+		testing.expect_value(t, seq_rows[1].id, i64(2))
+	}
+
+	// 7. V1 convenience wrapper (`duckdb.open`, `duckdb.exec`, `duckdb.sql_escape`, `duckdb.close`):
 	v1_db, v1_err, v1_ok := duckdb.open("")
 	testing.expectf(t, v1_ok, "expected duckdb.open to succeed, got %s", v1_err)
 	if v1_ok {
@@ -340,14 +358,14 @@ spec_layer3_schema_introspection_and_odin_struct_codegen :: proc(t: ^testing.T) 
 
 	sqllogic_statement_ok(
 		&fx,
-		"CREATE TABLE telemetry_events (event_id BIGINT, service VARCHAR, cpu_pct DOUBLE, ok BOOLEAN)",
+		"CREATE TABLE telemetry_events (event_id BIGINT, service VARCHAR, cpu_pct DOUBLE, ok BOOLEAN, raw_payload BLOB)",
 	)
 
 	cols, rc := duckdb.introspect_table_schema(fx.conn, "telemetry_events", context.temp_allocator, &fx.err)
 	expect_v2_ok(t, rc, &fx.err)
-	testing.expect_value(t, len(cols), 4)
+	testing.expect_value(t, len(cols), 5)
 
-	if len(cols) == 4 {
+	if len(cols) == 5 {
 		testing.expect_value(t, cols[0].name, "event_id")
 		testing.expect_value(t, cols[0].type_id, duckdb.V2_Logical_Type_Id.BIGINT)
 		testing.expect_value(t, cols[1].name, "service")
@@ -356,6 +374,8 @@ spec_layer3_schema_introspection_and_odin_struct_codegen :: proc(t: ^testing.T) 
 		testing.expect_value(t, cols[2].type_id, duckdb.V2_Logical_Type_Id.DOUBLE)
 		testing.expect_value(t, cols[3].name, "ok")
 		testing.expect_value(t, cols[3].type_id, duckdb.V2_Logical_Type_Id.BOOLEAN)
+		testing.expect_value(t, cols[4].name, "raw_payload")
+		testing.expect_value(t, cols[4].type_id, duckdb.V2_Logical_Type_Id.BLOB)
 	}
 
 	code := duckdb.generate_odin_struct_code("models", "Telemetry_Event", cols[:], context.temp_allocator)
@@ -366,23 +386,30 @@ Telemetry_Event :: struct {
 	service: string ` + "`duckdb:\"service\"`" + `,
 	cpu_pct: f64 ` + "`duckdb:\"cpu_pct\"`" + `,
 	ok: bool ` + "`duckdb:\"ok\"`" + `,
+	raw_payload: []u8 ` + "`duckdb:\"raw_payload\"`" + `,
 }
 `
 	testing.expect_value(t, strings.trim_space(code), strings.trim_space(expected_code))
 
-	// Sanitize complex/unsanitized column names (expressions, leading digits, spaces, Odin keywords):
+	// Sanitize complex/unsanitized column names (expressions, leading digits, spaces, Odin keywords) and `Maybe(...)` nullable fields:
 	dirty_cols := [4]duckdb.Column_Schema{
 		{name = "count(*)", sql_type = "BIGINT", type_id = .BIGINT},
-		{name = "1st Col-Name", sql_type = "VARCHAR", type_id = .VARCHAR},
+		{name = "1st Col-Name", sql_type = "VARCHAR", type_id = .VARCHAR, nullable = true},
 		{name = "map", sql_type = "INTEGER", type_id = .INTEGER},
 		{name = "***", sql_type = "BOOLEAN", type_id = .BOOLEAN},
 	}
 	sanitized_code := duckdb.generate_odin_struct_code("", "Dirty_Row", dirty_cols[:], context.temp_allocator)
 	expected_sanitized := `Dirty_Row :: struct {
 	count: i64 ` + "`duckdb:\"count(*)\"`" + `,
-	col_1st_col_name: string ` + "`duckdb:\"1st Col-Name\"`" + `,
+	col_1st_col_name: Maybe(string) ` + "`duckdb:\"1st Col-Name\"`" + `,
 	map_: i32 ` + "`duckdb:\"map\"`" + `,
 	col_3: bool ` + "`duckdb:\"***\"`" + `,
 }`
 	testing.expect_value(t, strings.trim_space(sanitized_code), strings.trim_space(expected_sanitized))
+
+	// Reserved-word table introspection (`"order"`):
+	sqllogic_statement_ok(&fx, `CREATE TABLE "order" (id BIGINT)`)
+	order_cols, rc_order := duckdb.introspect_table_schema(fx.conn, "order", context.temp_allocator, &fx.err)
+	expect_v2_ok(t, rc_order, &fx.err)
+	testing.expect_value(t, len(order_cols), 1)
 }

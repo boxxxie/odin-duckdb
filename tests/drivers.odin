@@ -4,7 +4,7 @@ package duckdb_tests
 // Layer 3: Protocol Drivers (`tests/drivers.odin`)
 // ============================================================================
 // Architecture Reference:
-// - 4-Layer ATDD Architecture (`/home/pauli/.gemini/config/skills/atdd-executable-specifications/SKILL.md`)
+// - 4-Layer ATDD Architecture (Executable Specifications, DSL, Protocol Drivers, SUT)
 // - Upstream C API v2 Driver Equivalents:
 //   - `references/c/duckdb-capi-2.0/test/api/capi/v2/test_capi_v2.hpp` lines 51-94, 305-475
 //   - `references/c/duckdb-capi-2.0/test/api/capi/v2/test_capi_v2_expression.cpp` lines 51-64 (`TwoCallString`)
@@ -237,7 +237,7 @@ driver_collect_column :: proc(
 			vec: duckdb.V2_Vector_Handle
 			_ = duckdb.duckdb_v2_data_chunk_get_vector(chunk, col_idx, &vec, nil)
 			view: duckdb.V2_Vector_View
-			_ = duckdb.duckdb_v2_vector_get_view(vec, &view, nil)
+			_ = duckdb.v2_vector_get_readable_view(vec, &view, nil)
 			data := cast([^]T)view.data
 			for i: duckdb.V2_Idx = 0; i < sz; i += 1 {
 				append(&rows, data[duckdb.v2_sel_at(view.sel, i)])
@@ -368,7 +368,7 @@ driver_scan_collection :: proc(
 		vec: duckdb.V2_Vector_Handle
 		_ = duckdb.duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nil)
 		view: duckdb.V2_Vector_View
-		_ = duckdb.duckdb_v2_vector_get_view(vec, &view, nil)
+		_ = duckdb.v2_vector_get_readable_view(vec, &view, nil)
 		data := cast([^]T)view.data
 		for i: duckdb.V2_Idx = 0; i < sz; i += 1 {
 			append(&out, data[duckdb.v2_sel_at(view.sel, i)])
