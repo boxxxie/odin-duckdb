@@ -1,0 +1,11 @@
+# Compiled Binaries
+*.bin
+*.out
+*.exe
+duckdb_bin
+tests.bin
+
+# DuckDB Artifacts
+*.duckdb
+*.duckdb.wal
+.tmp/
