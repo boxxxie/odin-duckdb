@@ -614,6 +614,6 @@ spec_v2_logging_scopes_and_log_sink_metadata :: proc(t: ^testing.T) {
 	expect_query_column(&fx, "SELECT emit_ctx_log()", []i32{1})
 	testing.expect_value(t, meta_cap.hits, 1)
 	testing.expect(t, meta_cap.has_conn, "expected context log inside UDF to carry connection_id")
-	testing.expect(t, meta_cap.has_thread, "expected context log inside UDF to carry thread_id")
+	testing.expect(t, !meta_cap.has_thread, "expected connection-scoped log to have has_thread_id == false per test_capi_v2_log_sink.cpp")
 	expect_v2_ok(t, driver_exec_drain(fx.conn, "SET logging_storage = 'memory'", nil, &fx.err), &fx.err)
 }

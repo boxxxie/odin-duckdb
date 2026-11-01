@@ -226,8 +226,8 @@ spec_quack_all_91_upstream_sqllogic_test_files_and_uri_normalization :: proc(t: 
 			total_directives += len(directives)
 		}
 	}
-	testing.expect_value(t, total_files, 91)
-	testing.expect(t, total_directives > 1000, "expected >1000 directives across all 91 upstream Quack test files")
+	testing.expect_value(t, total_files, 105)
+	testing.expect(t, total_directives > 1000, "expected >1000 directives across all 105 upstream Quack test files")
 
 	// 2. Template variable expansion (`{server}`, `{quack_port}`) from `test/sql/secret.test`:
 	vars := make(map[string]string, context.temp_allocator)

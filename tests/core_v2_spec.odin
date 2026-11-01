@@ -456,24 +456,26 @@ spec_v2_error_info_raw_text_json_and_slot_reuse :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(duckdb.v2_str_to_string(text), "syntax error"))
 	testing.expect(t, len(duckdb.v2_str_to_string(text)) > len(duckdb.v2_str_to_string(raw_text)))
 
-	// Reusing the same `err` slot via `set_text` & `set_code` replaces both text and raw_text (`test_capi_v2_error_info.cpp` lines 253-286):
+	// Reusing the same `err` slot via `set_text` & `set_code` updates `get_text` and clears `get_raw_text` (`test_capi_v2_error_info.cpp` lines 91-111):
 	msg2 := duckdb.v2_str_from_string("overwritten slot")
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_set_code(err, .INPUT_INVALID))
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_set_text(err, &msg2))
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_get_code(err, &code))
 	testing.expect_value(t, code, duckdb.V2_Error.INPUT_INVALID)
+	expect_v2_ok(t, duckdb.duckdb_v2_error_info_get_text(err, &text))
+	testing.expect_value(t, duckdb.v2_str_to_string(text), "overwritten slot")
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_get_raw_text(err, &raw_text))
-	testing.expect_value(t, duckdb.v2_str_to_string(raw_text), "overwritten slot")
+	testing.expect_value(t, duckdb.v2_str_to_string(raw_text), "")
 
-	// 3. `SET errors_as_json = true` formats `get_text` as JSON while `get_raw_text` stays plain (`test_capi_v2_error_info.cpp` lines 216-251):
+	// 3. `SET errors_as_json = true` formats `get_raw_text` as bare JSON (`{...}`) and `get_text` with `"position"` (`test_capi_v2_error_info.cpp` lines 179-210):
 	expect_v2_ok(t, driver_exec_drain(fx.conn, "SET errors_as_json = true", nil, &fx.err), &fx.err)
 	json_err: duckdb.V2_Error_Info_Handle
 	defer duckdb.duckdb_v2_error_info_destroy(&json_err)
 	testing.expect_value(t, driver_parse_single_stmt(fx.conn, "SELEC 1", &bad_stmt, &json_err), duckdb.V2_Error.QUERY_PARSER)
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_get_text(json_err, &text))
 	expect_v2_ok(t, duckdb.duckdb_v2_error_info_get_raw_text(json_err, &raw_text))
-	testing.expect(t, strings.has_prefix(duckdb.v2_str_to_string(text), "{"))
-	testing.expect(t, !strings.has_prefix(duckdb.v2_str_to_string(raw_text), "{"))
+	testing.expect(t, strings.has_prefix(duckdb.v2_str_to_string(raw_text), "{"))
+	testing.expect(t, strings.contains(duckdb.v2_str_to_string(text), `"position"`))
 }
 
 // ============================================================================
