@@ -185,3 +185,86 @@ missing_quack_table
 		}
 	}
 }
+
+// ----------------------------------------------------------------------------
+// 3. Full 91-File Upstream `duckdb-quack` Suite, Template Expansion & URI Normalization
+//    (`references/duckdb2/duckdb-quack/test/*`, `references/elixir/quackdb/test/quack_db/uri_test.exs`)
+// ----------------------------------------------------------------------------
+
+@(test)
+spec_quack_all_91_upstream_sqllogic_test_files_and_uri_normalization :: proc(t: ^testing.T) {
+	// 1. Parse all 91 upstream `.test`, `.test_slow`, and `.test_template` files in `references/duckdb2/duckdb-quack/test/`:
+	dirs := [3]string{
+		"references/duckdb2/duckdb-quack/test/sql",
+		"references/duckdb2/duckdb-quack/test/remote_pushdown",
+		"references/duckdb2/duckdb-quack/test/template",
+	}
+
+	total_files := 0
+	total_directives := 0
+	for dir_path in dirs {
+		dh, open_err := os.open(dir_path)
+		testing.expect_value(t, open_err, os.ERROR_NONE)
+		if open_err != os.ERROR_NONE {
+			continue
+		}
+		defer os.close(dh)
+
+		fis, read_err := os.read_dir(dh, -1, context.temp_allocator)
+		testing.expect_value(t, read_err, os.ERROR_NONE)
+		for fi in fis {
+			if !strings.has_suffix(fi.name, ".test") &&
+			   !strings.has_suffix(fi.name, ".test_slow") &&
+			   !strings.has_suffix(fi.name, ".test_template") {
+				continue
+			}
+			total_files += 1
+			raw, ferr := os.read_entire_file_from_path(fi.fullpath, context.temp_allocator)
+			testing.expect_value(t, ferr, os.ERROR_NONE)
+			directives := duckdb.sqllogic_parse_script(string(raw), context.temp_allocator)
+			testing.expectf(t, len(directives) > 0, "expected >0 directives in %s", fi.name)
+			total_directives += len(directives)
+		}
+	}
+	testing.expect_value(t, total_files, 91)
+	testing.expect(t, total_directives > 1000, "expected >1000 directives across all 91 upstream Quack test files")
+
+	// 2. Template variable expansion (`{server}`, `{quack_port}`) from `test/sql/secret.test`:
+	vars := make(map[string]string, context.temp_allocator)
+	vars["server"] = "'quack:localhost:9999'"
+	vars["quack_port"] = "9999"
+
+	expanded := duckdb.sqllogic_expand_template(
+		"create secret quack_ok (type quack, token 'asdf', scope 'quack:localhost:{quack_port}'); attach {server} as r_ok (type quack);",
+		vars,
+		context.temp_allocator,
+	)
+	testing.expect_value(
+		t,
+		expanded,
+		"create secret quack_ok (type quack, token 'asdf', scope 'quack:localhost:9999'); attach 'quack:localhost:9999' as r_ok (type quack);",
+	)
+
+	// 3. Quack endpoint URI normalization (`references/elixir/quackdb/test/quack_db/uri_test.exs`):
+	u1, ok1 := duckdb.quack_normalize_uri("127.0.0.1:4321")
+	testing.expect(t, ok1)
+	testing.expect_value(t, u1, "http://127.0.0.1:4321")
+
+	u2, ok2 := duckdb.quack_normalize_uri("quack:localhost:9999")
+	testing.expect(t, ok2)
+	testing.expect_value(t, u2, "http://localhost:9999")
+
+	u3, ok3 := duckdb.quack_normalize_uri("quack://10.0.0.1:8815")
+	testing.expect(t, ok3)
+	testing.expect_value(t, u3, "http://10.0.0.1:8815")
+
+	u4, ok4 := duckdb.quack_normalize_uri("https://10.0.0.1:8815")
+	testing.expect(t, ok4)
+	testing.expect_value(t, u4, "https://10.0.0.1:8815")
+
+	_, ok_bad1 := duckdb.quack_normalize_uri("ftp://example.com")
+	testing.expect(t, !ok_bad1)
+
+	_, ok_bad2 := duckdb.quack_normalize_uri("")
+	testing.expect(t, !ok_bad2)
+}

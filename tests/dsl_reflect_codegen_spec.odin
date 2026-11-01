@@ -71,6 +71,107 @@ spec_layer1_reflect_create_table_append_slice_and_query_as :: proc(t: ^testing.T
 	}
 }
 
+// Upstream Reference:
+// - `references/zig/zuckdb.zig/src/appender.zig` & `src/row.zig`
+//   (Typed struct appender & row unmarshalling across all signed/unsigned integers, floats,
+//    `Maybe(T)` optional NULL fields, `[]u8` BLOB, and >2048-row multi-chunk bulk flushes)
+Rich_Telemetry_Row :: struct {
+	id:      i64           `duckdb:"id,pk"`,
+	i8_val:  i8            `duckdb:"i8_val"`,
+	i16_val: i16           `duckdb:"i16_val"`,
+	u8_val:  u8            `duckdb:"u8_val"`,
+	u16_val: u16           `duckdb:"u16_val"`,
+	u32_val: u32           `duckdb:"u32_val"`,
+	u64_val: u64           `duckdb:"u64_val"`,
+	f32_val: f32           `duckdb:"f32_val"`,
+	f64_val: f64           `duckdb:"f64_val"`,
+	opt_num: Maybe(i64)    `duckdb:"opt_num"`,
+	opt_tag: Maybe(string) `duckdb:"opt_tag"`,
+	payload: []u8          `duckdb:"payload"`,
+}
+
+@(test)
+spec_layer1_reflect_optional_scalars_blob_and_multi_chunk_appender :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	ddl := duckdb.create_table_sql(Rich_Telemetry_Row, "rich_telemetry", true, context.temp_allocator)
+	testing.expect_value(
+		t,
+		ddl,
+		"CREATE TABLE IF NOT EXISTS rich_telemetry (id BIGINT PRIMARY KEY, i8_val TINYINT, i16_val SMALLINT, u8_val UTINYINT, u16_val USMALLINT, u32_val UINTEGER, u64_val UBIGINT, f32_val FLOAT, f64_val DOUBLE, opt_num BIGINT, opt_tag VARCHAR, payload BLOB)",
+	)
+	sqllogic_statement_ok(&fx, ddl)
+
+	b0 := [3]u8{0x01, 0x02, 0x03}
+	b1 := [2]u8{0xFE, 0xFF}
+	rows_in := [2]Rich_Telemetry_Row{
+		{
+			id      = 1,
+			i8_val  = -8,
+			i16_val = -1600,
+			u8_val  = 250,
+			u16_val = 60000,
+			u32_val = 4000000000,
+			u64_val = 9000000000000000000,
+			f32_val = 1.5,
+			f64_val = 2.75,
+			opt_num = i64(42),
+			opt_tag = "present",
+			payload = b0[:],
+		},
+		{
+			id      = 2,
+			i8_val  = 7,
+			i16_val = 1600,
+			u8_val  = 1,
+			u16_val = 2,
+			u32_val = 3,
+			u64_val = 4,
+			f32_val = -0.5,
+			f64_val = -1.25,
+			opt_num = nil,
+			opt_tag = nil,
+			payload = b1[:],
+		},
+	}
+	expect_v2_ok(t, duckdb.append_slice(fx.conn, "rich_telemetry", rows_in[:], &fx.err), &fx.err)
+
+	rows_out, rc := duckdb.query_as(
+		fx.conn,
+		Rich_Telemetry_Row,
+		"SELECT * FROM rich_telemetry ORDER BY id",
+		context.temp_allocator,
+		&fx.err,
+	)
+	expect_v2_ok(t, rc, &fx.err)
+	testing.expect_value(t, len(rows_out), 2)
+	if len(rows_out) == 2 {
+		testing.expect_value(t, rows_out[0].i8_val, i8(-8))
+		testing.expect_value(t, rows_out[0].u64_val, u64(9000000000000000000))
+		testing.expect_value(t, rows_out[0].opt_num, Maybe(i64)(42))
+		testing.expect_value(t, rows_out[0].opt_tag, Maybe(string)("present"))
+		testing.expect_value(t, len(rows_out[0].payload), 3)
+
+		testing.expect_value(t, rows_out[1].opt_num, Maybe(i64)(nil))
+		testing.expect_value(t, rows_out[1].opt_tag, Maybe(string)(nil))
+		testing.expect_value(t, len(rows_out[1].payload), 2)
+	}
+
+	// Multi-chunk bulk append (`2500` rows > `2048` standard vector size, ported from `zuckdb.zig/src/appender.zig`):
+	sqllogic_statement_ok(&fx, "CREATE TABLE bulk_sensors (id BIGINT PRIMARY KEY, sensor_id VARCHAR NOT NULL, reading_mv INTEGER DEFAULT 0, calibrated BOOLEAN)")
+	bulk := make([]Sensor_Reading, 2500, context.temp_allocator)
+	for i := 0; i < 2500; i += 1 {
+		bulk[i] = Sensor_Reading{
+			id         = i64(i + 1),
+			sensor_id  = "bulk",
+			reading_mv = i32(i * 2),
+			calibrated = (i % 2 == 0),
+		}
+	}
+	expect_v2_ok(t, duckdb.append_slice(fx.conn, "bulk_sensors", bulk, &fx.err), &fx.err)
+	expect_query_column(&fx, "SELECT count(*)::BIGINT FROM bulk_sensors", []i64{2500})
+}
+
 // ----------------------------------------------------------------------------
 // 2. Layer 2: Composable `duckdb.Query` Relational Builder & Friendly SQL
 // ----------------------------------------------------------------------------
@@ -124,6 +225,25 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 
 		q_pq := duckdb.query_from_parquet("s3://bucket/*.parquet")
 		testing.expect_value(t, duckdb.query_to_sql(q_pq), "SELECT * FROM read_parquet('s3://bucket/*.parquet')")
+
+		// Lakehouse & JSON sources + `SUMMARIZE` & `USING SAMPLE` (`references/elixir/quackdb/test/quack_db/source_test.exs` & `analytics_test.exs`):
+		q_json := duckdb.query_from_json("data/*.ndjson")
+		testing.expect_value(t, duckdb.query_to_sql(q_json), "SELECT * FROM read_json_auto('data/*.ndjson')")
+
+		q_ice := duckdb.query_from_iceberg("s3://warehouse/db/tbl")
+		testing.expect_value(t, duckdb.query_to_sql(q_ice), "SELECT * FROM iceberg_scan('s3://warehouse/db/tbl')")
+
+		q_delta := duckdb.query_from_delta("s3://warehouse/delta_tbl")
+		testing.expect_value(t, duckdb.query_to_sql(q_delta), "SELECT * FROM delta_scan('s3://warehouse/delta_tbl')")
+
+		q_sum := duckdb.query_from("events")
+		duckdb.query_where(&q_sum, "latency_ms > 0")
+		duckdb.query_summarize(&q_sum)
+		testing.expect_value(t, duckdb.query_to_sql(q_sum), "SUMMARIZE SELECT * FROM events WHERE latency_ms > 0")
+
+		q_samp := duckdb.query_from("events")
+		duckdb.query_sample(&q_samp, "10 PERCENT (bernoulli)")
+		testing.expect_value(t, duckdb.query_to_sql(q_samp), "SELECT * FROM events USING SAMPLE 10 PERCENT (bernoulli)")
 	}
 
 	// 3. Execute a `duckdb.Query` pipeline (`GROUP BY ALL` + `QUALIFY`) against DuckDB 2.0:

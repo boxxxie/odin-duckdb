@@ -507,3 +507,113 @@ spec_v2_custom_option_and_log_sink_callbacks :: proc(t: ^testing.T) {
 		expect_v2_ok(t, driver_exec_drain(fx.conn, "SET logging_storage = 'memory'", nil, &fx.err), &fx.err)
 	}
 }
+
+// ----------------------------------------------------------------------------
+// 5. Instance / Connection / Context Logging & Log Sink Metadata
+// (`test_capi_v2_logging.cpp`)
+// ----------------------------------------------------------------------------
+
+context_log_udf_exec_cb :: proc "c" (
+	info: duckdb.V2_Scalar_Function_Exec_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	lt := duckdb.v2_str_from_string("OdinContextLog")
+	msg := duckdb.v2_str_from_string("hello from context")
+	_ = duckdb.duckdb_v2_context_log(ctx, .INFO, &lt, &msg, err)
+
+	output: duckdb.V2_Vector_Handle
+	_ = duckdb.duckdb_v2_scalar_function_exec_get_result(info, &output, nil)
+	raw: rawptr
+	_ = duckdb.duckdb_v2_vector_get_data_mutable(output, &raw, nil)
+	(cast([^]i32)raw)[0] = 1
+}
+
+Log_Meta_Capture :: struct {
+	hits:       int,
+	has_conn:   bool,
+	has_tx:     bool,
+	has_query:  bool,
+	has_thread: bool,
+}
+
+log_meta_write_cb :: proc "c" (
+	info: duckdb.V2_Log_Sink_Write_Info_Handle,
+	user_data: rawptr,
+	timestamp: i64,
+	level: duckdb.V2_Log_Level,
+	scope: duckdb.V2_Log_Scope,
+	log_type: ^duckdb.V2_Str,
+	message: ^duckdb.V2_Str,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	cap := cast(^Log_Meta_Capture)user_data
+	if duckdb.v2_str_to_string(log_type^) != "OdinContextLog" {
+		return
+	}
+	cap.hits += 1
+	cid, txid, qid, tid: duckdb.V2_Idx
+	_ = duckdb.duckdb_v2_log_sink_write_info_get_connection_id(info, &cid, &cap.has_conn, nil)
+	_ = duckdb.duckdb_v2_log_sink_write_info_get_transaction_id(info, &txid, &cap.has_tx, nil)
+	_ = duckdb.duckdb_v2_log_sink_write_info_get_query_id(info, &qid, &cap.has_query, nil)
+	_ = duckdb.duckdb_v2_log_sink_write_info_get_thread_id(info, &tid, &cap.has_thread, nil)
+}
+
+@(test)
+spec_v2_logging_scopes_and_log_sink_metadata :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	// 1. `duckdb_v2_instance_log` (`DATABASE` scope) vs `duckdb_v2_connection_log` (`CONNECTION` scope) in `duckdb_logs` (`test_capi_v2_logging.cpp` lines 10-53):
+	expect_v2_ok(t, driver_exec_drain(fx.conn, "CALL enable_logging()", nil, &fx.err), &fx.err)
+
+	lt_inst := duckdb.v2_str_from_string("CAPI_V2_Inst")
+	msg_inst := duckdb.v2_str_from_string("hello from instance")
+	expect_v2_ok(t, duckdb.duckdb_v2_instance_log(fx.instance, .WARNING, &lt_inst, &msg_inst, &fx.err), &fx.err)
+
+	lt_conn := duckdb.v2_str_from_string("CAPI_V2_Conn")
+	msg_conn := duckdb.v2_str_from_string("hello from connection")
+	expect_v2_ok(t, duckdb.duckdb_v2_connection_log(fx.conn, .INFO, &lt_conn, &msg_conn, &fx.err), &fx.err)
+
+	sqllogic_query_rows(
+		&fx,
+		"SELECT scope, type, log_level, message FROM duckdb_logs WHERE type IN ('CAPI_V2_Inst', 'CAPI_V2_Conn') ORDER BY type",
+		[]string{
+			"CONNECTION\tCAPI_V2_Conn\tINFO\thello from connection",
+			"DATABASE\tCAPI_V2_Inst\tWARNING\thello from instance",
+		},
+	)
+
+	// 2. `duckdb_v2_context_log` inside a scalar UDF + `duckdb_v2_log_sink_write_info_get_transaction_id`/`query_id`/`thread_id`:
+	inst_factory: duckdb.V2_Factory_Handle
+	expect_v2_ok(t, duckdb.duckdb_v2_instance_get_factory(fx.instance, &inst_factory, &fx.err), &fx.err)
+
+	meta_cap := Log_Meta_Capture{}
+	sink: duckdb.V2_Log_Sink_Handle
+	expect_v2_ok(t, duckdb.duckdb_v2_log_sink_create(inst_factory, &sink, &fx.err), &fx.err)
+	defer duckdb.duckdb_v2_log_sink_destroy(&sink)
+
+	sink_name := duckdb.v2_str_from_string("odin_meta_sink")
+	ud := duckdb.V2_Opaque{ptr = &meta_cap}
+	expect_v2_ok(t, duckdb.duckdb_v2_log_sink_set_name(sink, &sink_name, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_log_sink_set_user_data(sink, &ud, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_log_sink_set_write_callback(sink, log_meta_write_cb, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_instance_register_log_sink(fx.instance, sink, &fx.err), &fx.err)
+
+	fn: duckdb.V2_Scalar_Function_Handle
+	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_create(fx.factory, &fn, &fx.err), &fx.err)
+	defer duckdb.duckdb_v2_scalar_function_destroy(&fn)
+	sig: duckdb.V2_Function_Signature_Handle
+	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_get_signature(fn, &sig, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_function_signature_set_return_type(sig, fx.int_type, &fx.err), &fx.err)
+	fn_name := duckdb.v2_str_from_string("emit_ctx_log")
+	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_name(fn, &fn_name, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_exec_callback(fn, context_log_udf_exec_cb, &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.duckdb_v2_connection_register_scalar_function(fx.conn, fn, &fx.err), &fx.err)
+
+	expect_v2_ok(t, driver_exec_drain(fx.conn, "SET logging_storage = 'ODIN_META_SINK'", nil, &fx.err), &fx.err)
+	expect_query_column(&fx, "SELECT emit_ctx_log()", []i32{1})
+	testing.expect_value(t, meta_cap.hits, 1)
+	testing.expect(t, meta_cap.has_conn, "expected context log inside UDF to carry connection_id")
+	testing.expect(t, meta_cap.has_thread, "expected context log inside UDF to carry thread_id")
+	expect_v2_ok(t, driver_exec_drain(fx.conn, "SET logging_storage = 'memory'", nil, &fx.err), &fx.err)
+}

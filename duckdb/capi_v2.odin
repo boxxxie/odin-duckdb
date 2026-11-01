@@ -637,19 +637,23 @@ foreign libduckdb {
 	duckdb_v2_error_info_destroy      :: proc(info: ^V2_Error_Info_Handle) -> V2_Error ---
 
 	// Instance & Connection (`duckdb_v2.h` lines 1980-2046, 2674-2698, 3864-4083)
-	duckdb_v2_library_version       :: proc(out_version: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_instance_create       :: proc(env: V2_Environment_Handle, out_instance: ^V2_Instance_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_instance_destroy      :: proc(instance: ^V2_Instance_Handle) -> V2_Error ---
-	duckdb_v2_instance_attach       :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, path: ^V2_Str, options: V2_Attach_Options_Handle, make_default: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_instance_detach       :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_instance_set_default  :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_instance_get_factory  :: proc(instance: V2_Instance_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_connection_create     :: proc(instance: V2_Instance_Handle, out_conn: ^V2_Connection_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_connection_destroy    :: proc(conn: ^V2_Connection_Handle) -> V2_Error ---
-	duckdb_v2_connection_interrupt  :: proc(conn: V2_Connection_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_connection_progress_get :: proc(conn: V2_Connection_Handle, out_percentage: ^f64, out_rows_processed: ^u64, out_total_rows_to_process: ^u64, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_connection_get_factory :: proc(conn: V2_Connection_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_context_get_factory    :: proc(ctx: V2_Context_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_library_version              :: proc(out_version: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_create              :: proc(env: V2_Environment_Handle, out_instance: ^V2_Instance_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_create_with_options :: proc(env: V2_Environment_Handle, option_names: [^]V2_Str, option_values: [^]V2_Str, option_count: V2_Idx, out_instance: ^V2_Instance_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_destroy             :: proc(instance: ^V2_Instance_Handle) -> V2_Error ---
+	duckdb_v2_instance_attach              :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, path: ^V2_Str, options: V2_Attach_Options_Handle, make_default: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_detach              :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_set_default         :: proc(instance: V2_Instance_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_instance_get_factory         :: proc(instance: V2_Instance_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_attach_options_create        :: proc(instance: V2_Instance_Handle, out_options: ^V2_Attach_Options_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_attach_options_set           :: proc(options: V2_Attach_Options_Handle, key: ^V2_Identifier, setting: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_attach_options_destroy       :: proc(options: ^V2_Attach_Options_Handle) -> V2_Error ---
+	duckdb_v2_connection_create            :: proc(instance: V2_Instance_Handle, out_conn: ^V2_Connection_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_connection_destroy           :: proc(conn: ^V2_Connection_Handle) -> V2_Error ---
+	duckdb_v2_connection_interrupt         :: proc(conn: V2_Connection_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_connection_progress_get      :: proc(conn: V2_Connection_Handle, out_percentage: ^f64, out_rows_processed: ^u64, out_total_rows_to_process: ^u64, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_connection_get_factory       :: proc(conn: V2_Connection_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_context_get_factory          :: proc(ctx: V2_Context_Handle, out_factory: ^V2_Factory_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 
 	// Configuration & Options (`duckdb_v2.h` lines 1580-1944)
 	duckdb_v2_instance_get_config           :: proc(instance: V2_Instance_Handle, out_config: ^V2_Config_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -660,13 +664,15 @@ foreign libduckdb {
 	duckdb_v2_config_get_option_by_name     :: proc(config: V2_Config_Handle, name: ^V2_Identifier, out_option: ^V2_Option_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_option_get_name               :: proc(option: V2_Option_Handle, out_name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_option_get_description        :: proc(option: V2_Option_Handle, out_description: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_option_get_type               :: proc(option: V2_Option_Handle, out_type: ^V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_option_get_default_value      :: proc(option: V2_Option_Handle, out_value: ^V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_option_get_default_scope      :: proc(option: V2_Option_Handle, out_scope: ^V2_Setting_Scope, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_option_supports_scope         :: proc(option: V2_Option_Handle, scope: V2_Setting_Scope, out_supported: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_option_get_alias_count        :: proc(option: V2_Option_Handle, out_count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_option_get_alias              :: proc(option: V2_Option_Handle, index: V2_Idx, out_alias: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_option_destroy                :: proc(option: ^V2_Option_Handle) -> V2_Error ---
 	duckdb_v2_config_get_option_value       :: proc(config: V2_Config_Handle, name: ^V2_Identifier, out_value: ^V2_Value_Handle, out_scope: ^V2_Setting_Scope, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_config_set_option_value       :: proc(config: V2_Config_Handle, name: ^V2_Identifier, value: V2_Value_Handle, scope: V2_Setting_Scope, err: ^V2_Error_Info_Handle) -> V2_Error ---
-	duckdb_v2_config_reset_option_value     :: proc(config: V2_Config_Handle, name: ^V2_Identifier, scope: V2_Setting_Scope, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_config_set_option_text        :: proc(config: V2_Config_Handle, name: ^V2_Identifier, setting: ^V2_Str, scope: V2_Setting_Scope, err: ^V2_Error_Info_Handle) -> V2_Error ---
 
 	// Schema & Logical Type (`duckdb_v2.h` lines 4703-4744, 9084-9452)
 	duckdb_v2_schema_get_count              :: proc(schema: V2_Schema_Handle, out_count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -677,6 +683,7 @@ foreign libduckdb {
 	duckdb_v2_factory_create_type_from_text :: proc(factory: V2_Factory_Handle, text: ^V2_Str, out_type: ^V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_factory_create_type_with_alias :: proc(factory: V2_Factory_Handle, type: V2_Logical_Type_Handle, alias: ^V2_Identifier, out_type: ^V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_factory_create_common_type    :: proc(factory: V2_Factory_Handle, types: [^]V2_Logical_Type_Handle, type_count: V2_Idx, out_type: ^V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_logical_type_copy             :: proc(type: V2_Logical_Type_Handle, out_type: ^V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_logical_type_destroy          :: proc(type: ^V2_Logical_Type_Handle) -> V2_Error ---
 	duckdb_v2_logical_type_is_equal         :: proc(left: V2_Logical_Type_Handle, right: V2_Logical_Type_Handle, result: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_logical_type_get_id           :: proc(type: V2_Logical_Type_Handle, out_id: ^V2_Logical_Type_Id, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -913,6 +920,10 @@ foreign libduckdb {
 	duckdb_v2_table_function_set_init_local_callback           :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Init_Local_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_exec_callback                 :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Exec_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_progress_callback             :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Progress_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_set_partition_data_callback       :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Partition_Data_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_set_partitioning_callback         :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Partitioning_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_set_claim_batch_callback          :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Claim_Batch_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_set_get_bind_info_callback        :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Get_Bind_Info_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_projection_pushdown           :: proc(fn: V2_Table_Function_Handle, enable: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_bind_add_result_column            :: proc(info: V2_Table_Function_Bind_Info_Handle, name: ^V2_Identifier, type: V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_bind_set_cardinality              :: proc(info: V2_Table_Function_Bind_Info_Handle, cardinality: V2_Idx, is_exact: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -936,6 +947,34 @@ foreign libduckdb {
 	duckdb_v2_table_function_exec_get_output_chunk             :: proc(info: V2_Table_Function_Exec_Info_Handle, chunk: ^V2_Data_Chunk_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_exec_get_column_count             :: proc(info: V2_Table_Function_Exec_Info_Handle, count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_exec_get_column_index             :: proc(info: V2_Table_Function_Exec_Info_Handle, index: V2_Idx, column_index: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_progress_get_user_data            :: proc(info: V2_Table_Function_Progress_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_progress_get_bind_data            :: proc(info: V2_Table_Function_Progress_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_progress_get_global_state         :: proc(info: V2_Table_Function_Progress_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_progress_set_progress             :: proc(info: V2_Table_Function_Progress_Info_Handle, progress: f64, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_user_data      :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_bind_data      :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_global_state   :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_local_state    :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_requires_batch_index       :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, required: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_requires_partition_columns :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, required: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_partition_column_count :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_get_partition_column_index :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, index: V2_Idx, column_index: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_set_batch_index    :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, batch_index: V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partition_data_set_partition_value :: proc(info: V2_Table_Function_Partition_Data_Info_Handle, index: V2_Idx, value: V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partitioning_get_user_data        :: proc(info: V2_Table_Function_Partitioning_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partitioning_get_bind_data        :: proc(info: V2_Table_Function_Partitioning_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partitioning_get_partition_column_count :: proc(info: V2_Table_Function_Partitioning_Info_Handle, count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partitioning_get_partition_column_index :: proc(info: V2_Table_Function_Partitioning_Info_Handle, index: V2_Idx, column_index: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_partitioning_set_partition_info   :: proc(info: V2_Table_Function_Partitioning_Info_Handle, partition_info: V2_Table_Partition_Kind, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_claim_batch_get_user_data         :: proc(info: V2_Table_Function_Claim_Batch_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_claim_batch_get_bind_data         :: proc(info: V2_Table_Function_Claim_Batch_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_claim_batch_get_global_state      :: proc(info: V2_Table_Function_Claim_Batch_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_claim_batch_get_local_state       :: proc(info: V2_Table_Function_Claim_Batch_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_claim_batch_set_claimed           :: proc(info: V2_Table_Function_Claim_Batch_Info_Handle, claimed: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_get_bind_info_get_user_data       :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_get_bind_info_get_bind_data       :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_get_bind_info_set_column_identifier :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, column_index: V2_Idx, child_path: [^]V2_Idx, child_path_length: V2_Idx, identifier: V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_get_bind_info_set_option          :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, key: ^V2_Str, value: V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_connection_register_table_function               :: proc(conn: V2_Connection_Handle, fn: V2_Table_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_destroy                           :: proc(fn: ^V2_Table_Function_Handle) -> V2_Error ---
 
@@ -1086,6 +1125,7 @@ foreign libduckdb {
 	// Logging & Log Sink (`duckdb_v2.h` lines 4172-4199, 8706-8938)
 	duckdb_v2_instance_log                          :: proc(instance: V2_Instance_Handle, level: V2_Log_Level, log_type: ^V2_Str, message: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_connection_log                        :: proc(conn: V2_Connection_Handle, level: V2_Log_Level, log_type: ^V2_Str, message: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_context_log                           :: proc(ctx: V2_Context_Handle, level: V2_Log_Level, log_type: ^V2_Str, message: ^V2_Str, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_log_sink_create                       :: proc(factory: V2_Factory_Handle, sink: ^V2_Log_Sink_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_log_sink_set_name                     :: proc(sink: V2_Log_Sink_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_log_sink_set_user_data                :: proc(sink: V2_Log_Sink_Handle, data: ^V2_Opaque, err: ^V2_Error_Info_Handle) -> V2_Error ---

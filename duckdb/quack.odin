@@ -66,6 +66,13 @@ quack_query_sql :: proc(alias: string, remote_sql: string, allocator := context.
 	return ""
 }
 
+quack_normalize_uri :: proc(
+	uri: string,
+	allocator := context.temp_allocator,
+) -> (normalized: string, ok: bool) {
+	return "", false
+}
+
 Sqllogic_Directive_Kind :: enum {
 	REQUIRE,
 	INCLUDE,
@@ -88,4 +95,12 @@ sqllogic_parse_script :: proc(
 	allocator := context.temp_allocator,
 ) -> [dynamic]Sqllogic_Directive {
 	return make([dynamic]Sqllogic_Directive, allocator)
+}
+
+sqllogic_expand_template :: proc(
+	content: string,
+	vars: map[string]string,
+	allocator := context.temp_allocator,
+) -> string {
+	return ""
 }

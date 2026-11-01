@@ -57,6 +57,26 @@ query_from_csv :: proc(path_glob: string, allocator := context.temp_allocator) -
 	return Query{}
 }
 
+query_from_json :: proc(path_glob: string, allocator := context.temp_allocator) -> Query {
+	return Query{}
+}
+
+query_from_iceberg :: proc(path: string, allocator := context.temp_allocator) -> Query {
+	return Query{}
+}
+
+query_from_delta :: proc(path: string, allocator := context.temp_allocator) -> Query {
+	return Query{}
+}
+
+query_summarize :: proc(q: ^Query) -> ^Query {
+	return q
+}
+
+query_sample :: proc(q: ^Query, sample_spec: string) -> ^Query {
+	return q
+}
+
 query_select :: proc(q: ^Query, cols: ..string) -> ^Query {
 	return q
 }

@@ -275,3 +275,220 @@ spec_v2_composite_values_variant_box_and_typed_leaf_roundtrips :: proc(t: ^testi
 		testing.expect_value(t, huge_str, "18446744073709551616")
 	}
 }
+
+// ============================================================================
+// 4. Common Type Supertype Resolution & All Scalar/Temporal/Map/Bit/Type Value
+//    Constructors & Getters (`test_capi_v2_common_type.cpp`, `test_capi_v2_value.cpp`)
+// ============================================================================
+
+@(test)
+spec_v2_common_type_and_all_scalar_temporal_value_roundtrips :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	// 1. `duckdb_v2_factory_create_common_type` (`test_capi_v2_common_type.cpp` lines 16-125):
+	{
+		// Single type -> returns equal type:
+		single := [1]duckdb.V2_Logical_Type_Handle{fx.int_type}
+		common1: duckdb.V2_Logical_Type_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_factory_create_common_type(fx.factory, &single[0], 1, &common1, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_logical_type_destroy(&common1)
+		eq1 := false
+		expect_v2_ok(t, duckdb.duckdb_v2_logical_type_is_equal(common1, fx.int_type, &eq1, &fx.err), &fx.err)
+		testing.expect(t, eq1)
+
+		// `[INTEGER, BIGINT, DOUBLE]` -> `DOUBLE` (matches `duckdb_v2_value_create_list` with child_type=nil):
+		double_type: duckdb.V2_Logical_Type_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_factory_create_type_from_id(fx.factory, .DOUBLE, nil, nil, 0, &double_type, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_logical_type_destroy(&double_type)
+
+		triple := [3]duckdb.V2_Logical_Type_Handle{fx.int_type, fx.bigint_type, double_type}
+		common3: duckdb.V2_Logical_Type_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_factory_create_common_type(fx.factory, &triple[0], 3, &common3, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_logical_type_destroy(&common3)
+
+		cid: duckdb.V2_Logical_Type_Id
+		expect_v2_ok(t, duckdb.duckdb_v2_logical_type_get_id(common3, &cid, &fx.err), &fx.err)
+		testing.expect_value(t, cid, duckdb.V2_Logical_Type_Id.DOUBLE)
+
+		// `duckdb_v2_logical_type_copy` produces an equal independent handle:
+		copied_type: duckdb.V2_Logical_Type_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_logical_type_copy(common3, &copied_type, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_logical_type_destroy(&copied_type)
+		eq_copy := false
+		expect_v2_ok(t, duckdb.duckdb_v2_logical_type_is_equal(common3, copied_type, &eq_copy, &fx.err), &fx.err)
+		testing.expect(t, eq_copy)
+
+		// Error cases: count == 0 (`INPUT_INVALID`) and null array element (`INPUT_INVALID`):
+		bad_out: duckdb.V2_Logical_Type_Handle
+		expect_v2_error(
+			t,
+			duckdb.duckdb_v2_factory_create_common_type(fx.factory, nil, 0, &bad_out, &fx.err),
+			.INPUT_INVALID,
+			&fx.err,
+		)
+		null_elem := [2]duckdb.V2_Logical_Type_Handle{fx.int_type, nil}
+		expect_v2_error(
+			t,
+			duckdb.duckdb_v2_factory_create_common_type(fx.factory, &null_elem[0], 2, &bad_out, &fx.err),
+			.INPUT_INVALID,
+			&fx.err,
+		)
+	}
+
+	// 2. Complete scalar & temporal `Value` constructors & getters (`test_capi_v2_value.cpp`):
+	{
+		v_b, v_i8, v_i16, v_u8, v_u16, v_u32, v_u64, v_uh, v_f32, v_f64: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_bool(fx.factory, true, &v_b, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_b)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_tinyint(fx.factory, -42, &v_i8, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_i8)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_smallint(fx.factory, -1234, &v_i16, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_i16)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_utinyint(fx.factory, 200, &v_u8, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_u8)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_usmallint(fx.factory, 50000, &v_u16, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_u16)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_uint(fx.factory, 3000000000, &v_u32, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_u32)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_ubigint(fx.factory, 9000000000000000000, &v_u64, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_u64)
+
+		uh_in := duckdb.V2_Uhugeint{lower = 7, upper = 3}
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_uhugeint(fx.factory, &uh_in, &v_uh, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_uh)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_float(fx.factory, 2.5, &v_f32, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_f32)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_double(fx.factory, 3.125, &v_f64, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_f64)
+
+		got_b := false
+		got_i8: i8
+		got_i16: i16
+		got_u8: u8
+		got_u16: u16
+		got_u32: u32
+		got_u64: u64
+		got_uh: duckdb.V2_Uhugeint
+		got_f32: f32
+		got_f64: f64
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_bool(v_b, &got_b, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_tinyint(v_i8, &got_i8, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_smallint(v_i16, &got_i16, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_utinyint(v_u8, &got_u8, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_usmallint(v_u16, &got_u16, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_uint(v_u32, &got_u32, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_ubigint(v_u64, &got_u64, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_uhugeint(v_uh, &got_uh, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_float(v_f32, &got_f32, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_double(v_f64, &got_f64, &fx.err), &fx.err)
+		testing.expect_value(t, got_b, true)
+		testing.expect_value(t, got_i8, i8(-42))
+		testing.expect_value(t, got_i16, i16(-1234))
+		testing.expect_value(t, got_u8, u8(200))
+		testing.expect_value(t, got_u16, u16(50000))
+		testing.expect_value(t, got_u32, u32(3000000000))
+		testing.expect_value(t, got_u64, u64(9000000000000000000))
+		testing.expect_value(t, got_uh, uh_in)
+		testing.expect_value(t, got_f32, f32(2.5))
+		testing.expect_value(t, got_f64, f64(3.125))
+	}
+
+	// 3. Temporal, UUID, BLOB, BIT, MAP, and TYPE-value round-trips:
+	{
+		v_dt, v_tm, v_tns, v_ttz, v_ts, v_tss, v_tsms, v_tsns, v_tstz, v_tstzns: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_date(fx.factory, 19800, &v_dt, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_dt)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_time(fx.factory, 3600000000, &v_tm, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tm)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_time_ns(fx.factory, 3600000000000, &v_tns, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tns)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_time_tz(fx.factory, 123456, &v_ttz, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_ttz)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp(fx.factory, 1700000000000000, &v_ts, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_ts)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp_sec(fx.factory, 1700000000, &v_tss, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tss)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp_ms(fx.factory, 1700000000000, &v_tsms, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tsms)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp_ns(fx.factory, 1700000000000000000, &v_tsns, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tsns)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp_tz(fx.factory, 1700000000000000, &v_tstz, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tstz)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_timestamp_tz_ns(fx.factory, 1700000000000000000, &v_tstzns, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_tstzns)
+
+		got_dt: i32
+		got_tm, got_tns, got_ts, got_tss, got_tsms, got_tsns, got_tstz, got_tstzns: i64
+		got_ttz: u64
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_date(v_dt, &got_dt, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_time(v_tm, &got_tm, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_time_ns(v_tns, &got_tns, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_time_tz(v_ttz, &got_ttz, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp(v_ts, &got_ts, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp_sec(v_tss, &got_tss, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp_ms(v_tsms, &got_tsms, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp_ns(v_tsns, &got_tsns, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp_tz(v_tstz, &got_tstz, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_timestamp_tz_ns(v_tstzns, &got_tstzns, &fx.err), &fx.err)
+		testing.expect_value(t, got_dt, i32(19800))
+		testing.expect_value(t, got_tm, i64(3600000000))
+		testing.expect_value(t, got_tns, i64(3600000000000))
+		testing.expect_value(t, got_ttz, u64(123456))
+		testing.expect_value(t, got_ts, i64(1700000000000000))
+
+		// UUID, BLOB, BIT, MAP, and TYPE value (`duckdb_v2_value_create_type` / `get_type`):
+		uuid_in := duckdb.V2_Hugeint{lower = 0x1122334455667788, upper = 0x19aabbccddeeff00}
+		v_uuid: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_uuid(fx.factory, &uuid_in, &v_uuid, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_uuid)
+		uuid_out: duckdb.V2_Hugeint
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_uuid(v_uuid, &uuid_out, &fx.err), &fx.err)
+		testing.expect_value(t, uuid_out, uuid_in)
+
+		blob_bytes := [4]u8{0xDE, 0xAD, 0x00, 0xEF}
+		blob_in := duckdb.V2_Str{ptr = &blob_bytes[0], len = 4}
+		v_blob: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_blob(fx.factory, &blob_in, &v_blob, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_blob)
+		blob_out: duckdb.V2_Str
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_blob(v_blob, &blob_out, &fx.err), &fx.err)
+		testing.expect_value(t, blob_out.len, duckdb.V2_Idx(4))
+
+		bit_bytes := [2]u8{5, 0b11111101}
+		bit_in := duckdb.V2_Str{ptr = &bit_bytes[0], len = 2}
+		v_bit: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_bit(fx.factory, &bit_in, &v_bit, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_bit)
+		bit_out: duckdb.V2_Str
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_blob(v_bit, &bit_out, &fx.err), &fx.err)
+		testing.expect_value(t, bit_out.len, duckdb.V2_Idx(2))
+
+		// MAP value (`duckdb_v2_value_create_map`) & TYPE value (`duckdb_v2_value_create_type` / `get_type`):
+		k0, mv0: duckdb.V2_Value_Handle
+		k_str := duckdb.v2_str_from_string("key1")
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_varchar(fx.factory, &k_str, &k0, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&k0)
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_int(fx.factory, 77, &mv0, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&mv0)
+
+		keys := [1]duckdb.V2_Value_Handle{k0}
+		vals := [1]duckdb.V2_Value_Handle{mv0}
+		v_map: duckdb.V2_Value_Handle
+		expect_v2_ok(
+			t,
+			duckdb.duckdb_v2_value_create_map(fx.factory, fx.varchar_type, fx.int_type, &keys[0], &vals[0], 1, &v_map, &fx.err),
+			&fx.err,
+		)
+		defer duckdb.duckdb_v2_value_destroy(&v_map)
+
+		v_type_val: duckdb.V2_Value_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_create_type(fx.factory, fx.bigint_type, &v_type_val, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_value_destroy(&v_type_val)
+		unwrapped_type: duckdb.V2_Logical_Type_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_value_get_type(v_type_val, &unwrapped_type, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_logical_type_destroy(&unwrapped_type)
+		type_eq := false
+		expect_v2_ok(t, duckdb.duckdb_v2_logical_type_is_equal(unwrapped_type, fx.bigint_type, &type_eq, &fx.err), &fx.err)
+		testing.expect(t, type_eq)
+	}
+}

@@ -535,6 +535,228 @@ spec_v2_table_function_scan_named_parameters_and_projection_pushdown :: proc(t: 
 }
 
 // ----------------------------------------------------------------------------
+// 2b. Table Function `init_local`, `progress`, `partition_data`, `partitioning`
+//     & `**kwargs` (`test_capi_v2_table_function.cpp` lines 350-2283)
+// ----------------------------------------------------------------------------
+
+Table_Part_Probe_State :: struct {
+	part_count:     duckdb.V2_Idx,
+	next_part:      duckdb.V2_Idx,
+	init_local_cnt: int,
+	progress_calls: int,
+	part_data_cnt:  int,
+	partition_cnt:  int,
+}
+
+table_part_bind_cb :: proc "c" (
+	info: duckdb.V2_Function_Bind_Info_Handle,
+	result: duckdb.V2_Table_Function_Bind_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_function_bind_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+
+	v0: duckdb.V2_Value_Handle
+	_ = duckdb.duckdb_v2_function_bind_get_arg_value(info, 0, &v0, nil)
+	n: i64
+	_ = duckdb.duckdb_v2_value_get_bigint(v0, &n, nil)
+	_ = duckdb.duckdb_v2_value_destroy(&v0)
+	st.part_count = duckdb.V2_Idx(n)
+
+	factory: duckdb.V2_Factory_Handle
+	_ = duckdb.duckdb_v2_context_get_factory(ctx, &factory, nil)
+	bigint_type: duckdb.V2_Logical_Type_Handle
+	_ = duckdb.duckdb_v2_factory_create_type_from_id(factory, .BIGINT, nil, nil, 0, &bigint_type, nil)
+	defer duckdb.duckdb_v2_logical_type_destroy(&bigint_type)
+
+	c0 := duckdb.v2_str_from_string("part_col")
+	c1 := duckdb.v2_str_from_string("val")
+	_ = duckdb.duckdb_v2_table_function_bind_add_result_column(result, &c0, bigint_type, nil)
+	_ = duckdb.duckdb_v2_table_function_bind_add_result_column(result, &c1, bigint_type, nil)
+}
+
+table_part_init_global_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Init_Global_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_table_function_init_global_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+	st.next_part = 0
+	_ = duckdb.duckdb_v2_table_function_init_global_set_max_threads(info, 1, nil)
+}
+
+table_part_init_local_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Init_Local_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_table_function_init_local_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+	st.init_local_cnt += 1
+	ls := duckdb.V2_Opaque{ptr = st}
+	_ = duckdb.duckdb_v2_table_function_init_local_set_local_state(info, &ls, nil)
+}
+
+table_part_progress_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Progress_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_table_function_progress_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+	st.progress_calls += 1
+	_ = duckdb.duckdb_v2_table_function_progress_set_progress(info, 50.0, nil)
+}
+
+table_part_data_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Partition_Data_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_table_function_partition_data_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+	st.part_data_cnt += 1
+
+	idx := st.next_part > 0 ? st.next_part - 1 : 0
+	_ = duckdb.duckdb_v2_table_function_partition_data_set_batch_index(info, idx, nil)
+
+	factory: duckdb.V2_Factory_Handle
+	_ = duckdb.duckdb_v2_context_get_factory(ctx, &factory, nil)
+	pval: duckdb.V2_Value_Handle
+	_ = duckdb.duckdb_v2_value_create_bigint(factory, i64(idx), &pval, nil)
+	defer duckdb.duckdb_v2_value_destroy(&pval)
+	_ = duckdb.duckdb_v2_table_function_partition_data_set_partition_value(info, 0, pval, nil)
+}
+
+table_part_partitioning_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Partitioning_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	_ = duckdb.duckdb_v2_table_function_partitioning_get_user_data(info, &ud, nil)
+	st := cast(^Table_Part_Probe_State)ud
+	st.partition_cnt += 1
+
+	col_cnt: duckdb.V2_Idx
+	_ = duckdb.duckdb_v2_table_function_partitioning_get_partition_column_count(info, &col_cnt, nil)
+	if col_cnt == 1 {
+		col_idx: duckdb.V2_Idx
+		_ = duckdb.duckdb_v2_table_function_partitioning_get_partition_column_index(info, 0, &col_idx, nil)
+		if col_idx == 0 {
+			_ = duckdb.duckdb_v2_table_function_partitioning_set_partition_info(info, .SINGLE_VALUE_PARTITIONS, nil)
+		}
+	}
+}
+
+table_part_exec_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Exec_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ls: rawptr
+	_ = duckdb.duckdb_v2_table_function_exec_get_local_state(info, &ls, nil)
+	st := cast(^Table_Part_Probe_State)ls
+
+	output: duckdb.V2_Data_Chunk_Handle
+	_ = duckdb.duckdb_v2_table_function_exec_get_output_chunk(info, &output, nil)
+	col0, col1: duckdb.V2_Vector_Handle
+	_ = duckdb.duckdb_v2_data_chunk_get_vector(output, 0, &col0, nil)
+	_ = duckdb.duckdb_v2_data_chunk_get_vector(output, 1, &col1, nil)
+
+	if st == nil || st.next_part >= st.part_count {
+		_ = duckdb.duckdb_v2_vector_set_size(col0, 0, nil)
+		_ = duckdb.duckdb_v2_vector_set_size(col1, 0, nil)
+		return
+	}
+	p := st.next_part
+	st.next_part += 1
+
+	r0, r1: rawptr
+	_ = duckdb.duckdb_v2_vector_get_data_mutable(col0, &r0, nil)
+	_ = duckdb.duckdb_v2_vector_get_data_mutable(col1, &r1, nil)
+	d0 := cast([^]i64)r0
+	d1 := cast([^]i64)r1
+	for i: duckdb.V2_Idx = 0; i < 4; i += 1 {
+		d0[i] = i64(p)
+		d1[i] = i64(p * 100 + i)
+	}
+	_ = duckdb.duckdb_v2_vector_set_size(col0, 4, nil)
+	_ = duckdb.duckdb_v2_vector_set_size(col1, 4, nil)
+}
+
+@(test)
+spec_v2_table_function_init_local_progress_partitioning_and_kwargs :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	// 1. Registering `partitioning_callback` without `partition_data_callback` fails synchronously with `INPUT_INVALID`
+	//    (`test_capi_v2_table_function.cpp` lines 1986-2002):
+	{
+		bad_fn: duckdb.V2_Table_Function_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_create(fx.factory, &bad_fn, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_table_function_destroy(&bad_fn)
+
+		bad_name := duckdb.v2_str_from_string("bad_part_fn")
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_name(bad_fn, &bad_name, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_bind_callback(bad_fn, table_part_bind_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_exec_callback(bad_fn, table_part_exec_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_partitioning_callback(bad_fn, table_part_partitioning_cb, &fx.err), &fx.err)
+
+		expect_v2_error(
+			t,
+			duckdb.duckdb_v2_connection_register_table_function(fx.conn, bad_fn, &fx.err),
+			.INPUT_INVALID,
+			&fx.err,
+		)
+	}
+
+	// 2. Register `part_probe(n, **kwargs)` with `init_local`, `progress`, `partition_data`, and `partitioning` callbacks
+	//    and verify `GROUP BY part_col` uses `Partitioned Aggregate` (`test_capi_v2_table_function.cpp` lines 1949-1984):
+	probe_st := Table_Part_Probe_State{}
+	{
+		fn: duckdb.V2_Table_Function_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_create(fx.factory, &fn, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_table_function_destroy(&fn)
+
+		sig: duckdb.V2_Function_Signature_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_get_signature(fn, &sig, &fx.err), &fx.err)
+		p_n := duckdb.v2_str_from_string("n")
+		p_kw := duckdb.v2_str_from_string("kwargs")
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_add_parameter(sig, &p_n, fx.bigint_type, nil, .POSITIONAL_ONLY, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_add_parameter(sig, &p_kw, fx.any_type, nil, .NAMED_VARIADIC, &fx.err), &fx.err)
+
+		name := duckdb.v2_str_from_string("part_probe")
+		ud := duckdb.V2_Opaque{ptr = &probe_st}
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_name(fn, &name, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_user_data(fn, &ud, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_bind_callback(fn, table_part_bind_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_init_global_callback(fn, table_part_init_global_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_init_local_callback(fn, table_part_init_local_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_progress_callback(fn, table_part_progress_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_partition_data_callback(fn, table_part_data_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_partitioning_callback(fn, table_part_partitioning_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_exec_callback(fn, table_part_exec_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_connection_register_table_function(fx.conn, fn, &fx.err), &fx.err)
+
+		expect_query_column(
+			&fx,
+			"SELECT count(*)::BIGINT FROM part_probe(3, tag := 'alpha', retries := 2) GROUP BY part_col ORDER BY part_col",
+			[]i64{4, 4, 4},
+		)
+		testing.expect(t, probe_st.init_local_cnt >= 1, "expected init_local_callback to execute")
+		testing.expect(t, probe_st.part_data_cnt >= 1, "expected partition_data_callback to execute")
+		testing.expect(t, probe_st.partition_cnt >= 1, "expected partitioning_callback to execute")
+	}
+}
+
+// ----------------------------------------------------------------------------
 // 3. Aggregate Function Callbacks (`test_capi_v2_aggregate_function.cpp`)
 // ----------------------------------------------------------------------------
 
