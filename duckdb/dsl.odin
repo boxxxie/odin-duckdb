@@ -75,23 +75,23 @@ query_from_quack_rpc :: proc(attach_alias: string, remote_sql: string, allocator
 }
 
 query_from_parquet :: proc(path_glob: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("read_parquet('%s')", path_glob, allocator = allocator), allocator)
+	return query_from(fmt.aprintf("read_parquet('%s')", sql_escape(path_glob, allocator), allocator = allocator), allocator)
 }
 
 query_from_csv :: proc(path_glob: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("read_csv('%s')", path_glob, allocator = allocator), allocator)
+	return query_from(fmt.aprintf("read_csv('%s')", sql_escape(path_glob, allocator), allocator = allocator), allocator)
 }
 
 query_from_json :: proc(path_glob: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("read_json_auto('%s')", path_glob, allocator = allocator), allocator)
+	return query_from(fmt.aprintf("read_json_auto('%s')", sql_escape(path_glob, allocator), allocator = allocator), allocator)
 }
 
 query_from_iceberg :: proc(path: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("iceberg_scan('%s')", path, allocator = allocator), allocator)
+	return query_from(fmt.aprintf("iceberg_scan('%s')", sql_escape(path, allocator), allocator = allocator), allocator)
 }
 
 query_from_delta :: proc(path: string, allocator := context.temp_allocator) -> Query {
-	return query_from(fmt.aprintf("delta_scan('%s')", path, allocator = allocator), allocator)
+	return query_from(fmt.aprintf("delta_scan('%s')", sql_escape(path, allocator), allocator = allocator), allocator)
 }
 
 query_select :: proc(q: ^Query, cols: ..string) -> ^Query {

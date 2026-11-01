@@ -135,17 +135,7 @@ driver_two_call_string :: proc(
 	render_fn: proc "c" (H, [^]u8, duckdb.V2_Idx, ^duckdb.V2_Idx, ^duckdb.V2_Error_Info_Handle) -> duckdb.V2_Error,
 	allocator := context.temp_allocator,
 ) -> (text: string, rc: duckdb.V2_Error) {
-	length: duckdb.V2_Idx
-	rc = render_fn(subject, nil, 0, &length, nil)
-	if rc != .NONE {
-		return "", rc
-	}
-	buf := make([]u8, int(length) + 1, allocator)
-	rc = render_fn(subject, raw_data(buf), duckdb.V2_Idx(len(buf)), &length, nil)
-	if rc != .NONE {
-		return "", rc
-	}
-	return string(buf[:length]), .NONE
+	return duckdb.v2_two_call_string(subject, render_fn, nil, allocator)
 }
 
 // Formats a two-call `duckdb_v2_value_to_string` diagnostic string using `allocator`.

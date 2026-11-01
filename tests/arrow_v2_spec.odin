@@ -171,7 +171,7 @@ arrow_probe_exec_cb :: proc "c" (
 	_ = duckdb.duckdb_v2_schema_get_count(resolved, &g_arrow_probe.field_count, err)
 	if g_arrow_probe.field_count > 0 {
 		fname: duckdb.V2_Identifier
-		ftype: duckdb.V2_Logical_Type_Handle
+		ftype: duckdb.V2_Logical_Type_Handle // Borrowed from `resolved` schema (`duckdb_v2.h` line 4720); do NOT destroy.
 		if duckdb.duckdb_v2_schema_get_field(resolved, 0, &fname, &ftype, err) == .NONE {
 			if duckdb.v2_str_to_string(fname) == "a" {
 				g_arrow_probe.first_name = "a"
@@ -180,7 +180,6 @@ arrow_probe_exec_cb :: proc "c" (
 			if duckdb.duckdb_v2_logical_type_get_id(ftype, &tid, err) == .NONE && tid == .BIGINT {
 				g_arrow_probe.first_type = "BIGINT"
 			}
-			duckdb.duckdb_v2_logical_type_destroy(&ftype)
 		}
 	}
 

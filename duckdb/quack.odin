@@ -61,7 +61,18 @@ quack_normalize_uri :: proc(endpoint: string, allocator := context.temp_allocato
 	if len(s) == 0 {
 		return "", false
 	}
-	if strings.has_prefix(s, "http://") || strings.has_prefix(s, "https://") {
+	if strings.has_prefix(s, "http://") {
+		rest := s[len("http://"):]
+		if len(rest) == 0 {
+			return "", false
+		}
+		return strings.clone(s, allocator), true
+	}
+	if strings.has_prefix(s, "https://") {
+		rest := s[len("https://"):]
+		if len(rest) == 0 {
+			return "", false
+		}
 		return strings.clone(s, allocator), true
 	}
 	if strings.has_prefix(s, "quack://") {
@@ -88,15 +99,15 @@ quack_normalize_uri :: proc(endpoint: string, allocator := context.temp_allocato
 quack_serve_sql :: proc(cfg: Quack_Serve_Config, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
 	endpoint := cfg.endpoint if len(cfg.endpoint) > 0 else "quack:localhost:0"
-	fmt.sbprintf(&b, "SELECT * FROM quack_serve('%s'", endpoint)
+	fmt.sbprintf(&b, "SELECT * FROM quack_serve('%s'", sql_escape(endpoint, allocator))
 	if len(cfg.token) > 0 {
-		fmt.sbprintf(&b, ", token='%s'", cfg.token)
+		fmt.sbprintf(&b, ", token='%s'", sql_escape(cfg.token, allocator))
 	}
 	if len(cfg.cert) > 0 {
-		fmt.sbprintf(&b, ", cert='%s'", cfg.cert)
+		fmt.sbprintf(&b, ", cert='%s'", sql_escape(cfg.cert, allocator))
 	}
 	if len(cfg.key) > 0 {
-		fmt.sbprintf(&b, ", key='%s'", cfg.key)
+		fmt.sbprintf(&b, ", key='%s'", sql_escape(cfg.key, allocator))
 	}
 	strings.write_byte(&b, ')')
 	return strings.to_string(b)
@@ -107,7 +118,7 @@ quack_stop_sql :: proc(endpoint := "", allocator := context.temp_allocator) -> s
 	if len(endpoint) == 0 {
 		return fmt.aprintf("SELECT * FROM quack_stop()", allocator = allocator)
 	}
-	return fmt.aprintf("SELECT * FROM quack_stop('%s')", endpoint, allocator = allocator)
+	return fmt.aprintf("SELECT * FROM quack_stop('%s')", sql_escape(endpoint, allocator), allocator = allocator)
 }
 
 // Builds `CALL quack_identify(name => '...', region => '...', meta => '...')` (`whoami.test` lines 42, 59).
@@ -115,7 +126,7 @@ quack_identify_sql :: proc(cfg: Quack_Identity_Config, allocator := context.temp
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "CALL quack_identify(")
 	first := true
-	write_arg :: proc(b: ^strings.Builder, first: ^bool, k, v: string) {
+	write_arg :: proc(b: ^strings.Builder, first: ^bool, k, v: string, allocator := context.temp_allocator) {
 		if len(v) == 0 {
 			return
 		}
@@ -123,13 +134,13 @@ quack_identify_sql :: proc(cfg: Quack_Identity_Config, allocator := context.temp
 			strings.write_string(b, ", ")
 		}
 		first^ = false
-		fmt.sbprintf(b, "%s => '%s'", k, v)
+		fmt.sbprintf(b, "%s => '%s'", k, sql_escape(v, allocator))
 	}
-	write_arg(&b, &first, "name", cfg.name)
-	write_arg(&b, &first, "provider", cfg.provider)
-	write_arg(&b, &first, "hostname", cfg.hostname)
-	write_arg(&b, &first, "region", cfg.region)
-	write_arg(&b, &first, "meta", cfg.meta_json)
+	write_arg(&b, &first, "name", cfg.name, allocator)
+	write_arg(&b, &first, "provider", cfg.provider, allocator)
+	write_arg(&b, &first, "hostname", cfg.hostname, allocator)
+	write_arg(&b, &first, "region", cfg.region, allocator)
+	write_arg(&b, &first, "meta", cfg.meta_json, allocator)
 	strings.write_byte(&b, ')')
 	return strings.to_string(b)
 }
@@ -137,9 +148,14 @@ quack_identify_sql :: proc(cfg: Quack_Identity_Config, allocator := context.temp
 // Builds `CREATE SECRET <name> (TYPE quack, TOKEN '<token>'[, SCOPE '<scope>'])` (`secret.test` line 10).
 quack_secret_sql :: proc(cfg: Quack_Secret_Config, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
-	fmt.sbprintf(&b, "CREATE SECRET %s (TYPE quack, TOKEN '%s'", cfg.name, cfg.token)
+	fmt.sbprintf(
+		&b,
+		"CREATE SECRET %s (TYPE quack, TOKEN '%s'",
+		v2_quote_identifier(cfg.name, false, allocator),
+		sql_escape(cfg.token, allocator),
+	)
 	if len(cfg.scope) > 0 {
-		fmt.sbprintf(&b, ", SCOPE '%s'", cfg.scope)
+		fmt.sbprintf(&b, ", SCOPE '%s'", sql_escape(cfg.scope, allocator))
 	}
 	strings.write_byte(&b, ')')
 	return strings.to_string(b)
@@ -148,7 +164,12 @@ quack_secret_sql :: proc(cfg: Quack_Secret_Config, allocator := context.temp_all
 // Builds `ATTACH '<endpoint>' AS <alias> (TYPE quack[, READ_ONLY][, PERSISTENT][, TOKEN '...'][, SSL_FINGERPRINT '...'][, EXTRA_HTTP_HEADERS MAP {...}])`.
 quack_attach_sql :: proc(cfg: Quack_Attach_Config, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
-	fmt.sbprintf(&b, "ATTACH '%s' AS %s (TYPE quack", cfg.endpoint, cfg.alias)
+	fmt.sbprintf(
+		&b,
+		"ATTACH '%s' AS %s (TYPE quack",
+		sql_escape(cfg.endpoint, allocator),
+		v2_quote_identifier(cfg.alias, false, allocator),
+	)
 	if cfg.read_only {
 		strings.write_string(&b, ", READ_ONLY")
 	}
@@ -156,10 +177,10 @@ quack_attach_sql :: proc(cfg: Quack_Attach_Config, allocator := context.temp_all
 		strings.write_string(&b, ", PERSISTENT")
 	}
 	if len(cfg.token) > 0 {
-		fmt.sbprintf(&b, ", TOKEN '%s'", cfg.token)
+		fmt.sbprintf(&b, ", TOKEN '%s'", sql_escape(cfg.token, allocator))
 	}
 	if len(cfg.ssl_fingerprint) > 0 {
-		fmt.sbprintf(&b, ", SSL_FINGERPRINT '%s'", cfg.ssl_fingerprint)
+		fmt.sbprintf(&b, ", SSL_FINGERPRINT '%s'", sql_escape(cfg.ssl_fingerprint, allocator))
 	}
 	if len(cfg.extra_headers) > 0 {
 		strings.write_string(&b, ", EXTRA_HTTP_HEADERS MAP {")
@@ -167,7 +188,7 @@ quack_attach_sql :: proc(cfg: Quack_Attach_Config, allocator := context.temp_all
 			if i > 0 {
 				strings.write_string(&b, ", ")
 			}
-			fmt.sbprintf(&b, "'%s': '%s'", h.key, h.value)
+			fmt.sbprintf(&b, "'%s': '%s'", sql_escape(h.key, allocator), sql_escape(h.value, allocator))
 		}
 		strings.write_byte(&b, '}')
 	}
@@ -177,8 +198,12 @@ quack_attach_sql :: proc(cfg: Quack_Attach_Config, allocator := context.temp_all
 
 // Builds `FROM <alias>.query('<escaped_remote_sql>')` (`secret.test` line 16).
 quack_query_sql :: proc(alias: string, remote_sql: string, allocator := context.temp_allocator) -> string {
-	escaped, _ := strings.replace_all(remote_sql, "'", "''", allocator)
-	return fmt.aprintf("FROM %s.query('%s')", alias, escaped, allocator = allocator)
+	return fmt.aprintf(
+		"FROM %s.query('%s')",
+		v2_quote_identifier(alias, false, allocator),
+		sql_escape(remote_sql, allocator),
+		allocator = allocator,
+	)
 }
 
 // ----------------------------------------------------------------------------
@@ -215,6 +240,21 @@ sqllogic_expand_template :: proc(
 		res, _ = strings.replace_all(res, placeholder, v, allocator)
 	}
 	return res
+}
+
+@(private = "file")
+is_sqllogic_directive_start :: proc(trimmed: string) -> bool {
+	return strings.has_prefix(trimmed, "statement ") ||
+	       strings.has_prefix(trimmed, "query ") ||
+	       strings.has_prefix(trimmed, "require ") ||
+	       strings.has_prefix(trimmed, "include ") ||
+	       strings.has_prefix(trimmed, "loop ") ||
+	       strings.has_prefix(trimmed, "concurrentloop ") ||
+	       trimmed == "endloop" ||
+	       trimmed == "restart" ||
+	       trimmed == "halt" ||
+	       strings.has_prefix(trimmed, "mode ") ||
+	       strings.has_prefix(trimmed, "pragma ")
 }
 
 // Parses a DuckDB SQLLogicTest `.test` script into structured `Sqllogic_Directive` items.
@@ -309,6 +349,20 @@ sqllogic_parse_script :: proc(
 			}
 			i += 1
 
+			// Look ahead to check whether this `query` block has a `----` separator before the next directive.
+			// If it does, blank lines before `----` are part of a multi-line SQL query rather than block terminators.
+			has_separator := false
+			for j := i; j < len(lines); j += 1 {
+				tj := strings.trim_space(lines[j])
+				if tj == "----" {
+					has_separator = true
+					break
+				}
+				if is_sqllogic_directive_start(tj) {
+					break
+				}
+			}
+
 			sql_b := strings.builder_make(allocator)
 			exp_b := strings.builder_make(allocator)
 			in_expected := false
@@ -325,7 +379,7 @@ sqllogic_parse_script :: proc(
 					i += 1
 					continue
 				}
-				if !in_expected && len(trimmed_l) == 0 {
+				if !in_expected && !has_separator && len(trimmed_l) == 0 {
 					i += 1
 					break
 				}

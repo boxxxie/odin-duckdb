@@ -59,28 +59,29 @@ introspect_table_schema :: proc(
 
 	for i: V2_Idx = 0; i < count; i += 1 {
 		fname: V2_Identifier
-		ftype: V2_Logical_Type_Handle
+		ftype: V2_Logical_Type_Handle // Borrowed from `schema` (`duckdb_v2.h` line 4720); do NOT destroy.
 		rc = duckdb_v2_schema_get_field(schema, i, &fname, &ftype, err)
 		if rc != .NONE {
 			return cols, rc
 		}
-		defer duckdb_v2_logical_type_destroy(&ftype)
 
 		tid: V2_Logical_Type_Id
-		_ = duckdb_v2_logical_type_get_id(ftype, &tid, nil)
+		rc = duckdb_v2_logical_type_get_id(ftype, &tid, err)
+		if rc != .NONE {
+			return cols, rc
+		}
 
-		t_len: V2_Idx
-		_ = duckdb_v2_logical_type_to_text(ftype, nil, 0, &t_len, nil)
-		t_buf := make([]u8, int(t_len), context.temp_allocator)
-		if t_len > 0 {
-			_ = duckdb_v2_logical_type_to_text(ftype, raw_data(t_buf), t_len, &t_len, nil)
+		sql_type_str: string
+		sql_type_str, rc = v2_two_call_string(ftype, duckdb_v2_logical_type_to_text, err, context.temp_allocator)
+		if rc != .NONE {
+			return cols, rc
 		}
 
 		append(
 			&cols,
 			Column_Schema{
 				name     = strings.clone(v2_str_to_string(fname), allocator),
-				sql_type = strings.clone(string(t_buf[:int(t_len)]), allocator),
+				sql_type = strings.clone(sql_type_str, allocator),
 				type_id  = tid,
 				nullable = true,
 			},
@@ -127,6 +128,55 @@ duckdb_type_id_to_odin_type :: proc(type_id: V2_Logical_Type_Id) -> string {
 	return "string"
 }
 
+@(private = "file")
+is_odin_reserved_word :: proc(ident: string) -> bool {
+	switch ident {
+	case "asm", "auto_cast", "bit_field", "bit_set", "break", "case", "cast", "context",
+	     "continue", "defer", "distinct", "do", "dynamic", "else", "enum", "fallthrough",
+	     "for", "foreign", "if", "import", "in", "map", "matrix", "not_in", "or_break",
+	     "or_continue", "or_else", "or_return", "package", "proc", "return", "struct",
+	     "switch", "transmute", "typeid", "union", "using", "when", "where",
+	     "any", "bool", "byte", "cstring", "f16", "f32", "f64", "i8", "i16", "i32", "i64",
+	     "i128", "int", "rawptr", "rune", "string", "u8", "u16", "u32", "u64", "u128",
+	     "uint", "uintptr":
+		return true
+	}
+	return false
+}
+
+// Sanitizes a raw SQL column name into a valid snake_case Odin struct field identifier.
+sanitize_odin_identifier :: proc(raw_name: string, idx := 0, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	prev_underscore := false
+	for i := 0; i < len(raw_name); i += 1 {
+		ch := raw_name[i]
+		is_upper := ch >= 'A' && ch <= 'Z'
+		is_lower := ch >= 'a' && ch <= 'z'
+		is_digit := ch >= '0' && ch <= '9'
+		if is_upper {
+			strings.write_byte(&b, ch + ('a' - 'A'))
+			prev_underscore = false
+		} else if is_lower || is_digit {
+			strings.write_byte(&b, ch)
+			prev_underscore = false
+		} else if !prev_underscore && strings.builder_len(b) > 0 {
+			strings.write_byte(&b, '_')
+			prev_underscore = true
+		}
+	}
+	s := strings.trim(strings.to_string(b), "_")
+	if len(s) == 0 {
+		return fmt.aprintf("col_%d", idx, allocator = allocator)
+	}
+	if s[0] >= '0' && s[0] <= '9' {
+		s = fmt.aprintf("col_%s", s, allocator = allocator)
+	}
+	if is_odin_reserved_word(s) {
+		s = fmt.aprintf("%s_", s, allocator = allocator)
+	}
+	return s
+}
+
 // Generates an idiomatic Odin `struct` definition with `duckdb:"..."` struct tags from `columns`.
 generate_odin_struct_code :: proc(
 	package_name: string,
@@ -139,9 +189,12 @@ generate_odin_struct_code :: proc(
 		fmt.sbprintf(&b, "package %s\n\n", package_name)
 	}
 	fmt.sbprintf(&b, "%s :: struct {{\n", struct_name)
-	for col in columns {
+	for col, idx in columns {
+		field_ident := sanitize_odin_identifier(col.name, idx, allocator)
 		odin_t := duckdb_type_id_to_odin_type(col.type_id)
-		fmt.sbprintf(&b, "\t%s: %s `duckdb:\"%s\"`,\n", col.name, odin_t, col.name)
+		escaped_tag, _ := strings.replace_all(col.name, `\`, `\\`, allocator)
+		escaped_tag, _ = strings.replace_all(escaped_tag, `"`, `\"`, allocator)
+		fmt.sbprintf(&b, "\t%s: %s `duckdb:\"%s\"`,\n", field_ident, odin_t, escaped_tag)
 	}
 	strings.write_string(&b, "}\n")
 	return strings.to_string(b)

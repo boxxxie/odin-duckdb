@@ -1366,6 +1366,9 @@ v2_bit_count :: #force_inline proc "contextless" (b: ^V2_Bytes) -> u64 {
 }
 
 v2_bit_data :: #force_inline proc "contextless" (b: ^V2_Bytes) -> [^]u8 {
+	if v2_bytes_length(b) <= 1 {
+		return nil
+	}
 	return v2_bytes_data(b)[1:]
 }
 
@@ -1467,4 +1470,60 @@ v2_vector_assign_bytes :: proc(vec: V2_Vector_Handle, index: V2_Idx, data: []u8,
 	arr := cast([^]V2_Bytes)raw
 	arr[index] = storage
 	return .NONE
+}
+
+// Two-call buffer sizing protocol (`duckdb_v2.h` `FillCallerText` convention:
+// call 1 with `nil, 0` reports required length excluding NUL; call 2 requires `length + 1` capacity).
+v2_two_call_string :: proc(
+	handle: $H,
+	to_text_fn: proc "c" (h: H, out_text: [^]u8, out_cap: V2_Idx, out_len: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error,
+	err: ^V2_Error_Info_Handle = nil,
+	allocator := context.temp_allocator,
+) -> (string, V2_Error) {
+	length: V2_Idx
+	rc := to_text_fn(handle, nil, 0, &length, err)
+	if rc != .NONE {
+		return "", rc
+	}
+	buf := make([]u8, int(length) + 1, allocator)
+	rc = to_text_fn(handle, raw_data(buf), length + 1, &length, err)
+	if rc != .NONE {
+		return "", rc
+	}
+	return string(buf[:int(length)]), .NONE
+}
+
+// Renders a SQL identifier using DuckDB 2.0's `duckdb_v2_identifier_render_quoted` rules:
+// bare valid identifiers pass through unchanged (`sensor_readings` -> `sensor_readings`),
+// while SQL reserved words, spaces, leading digits, and embedded quotes are double-quoted
+// (`select` -> `"select"`, `my col` -> `"my col"`, `a"b` -> `"a""b"`).
+// Supports dot-separated qualified table names (e.g. `schema.table`) when `allow_qualified` is true.
+v2_quote_identifier :: proc(
+	name: string,
+	allow_qualified := false,
+	allocator := context.temp_allocator,
+) -> string {
+	if len(name) == 0 {
+		return `""`
+	}
+	if allow_qualified {
+		qname: V2_Qname_Handle
+		view := v2_str_from_string(name)
+		if duckdb_v2_qname_parse(&view, &qname, nil) == .NONE && qname != nil {
+			defer duckdb_v2_qname_destroy(&qname)
+			if rendered, rc := v2_two_call_string(qname, duckdb_v2_qname_render, nil, allocator); rc == .NONE {
+				return rendered
+			}
+		}
+	}
+	ident := V2_Identifier(v2_str_from_string(name))
+	length: V2_Idx
+	if duckdb_v2_identifier_render_quoted(&ident, nil, 0, &length, nil) != .NONE {
+		return name
+	}
+	buf := make([]u8, int(length) + 1, allocator)
+	if duckdb_v2_identifier_render_quoted(&ident, raw_data(buf), length + 1, &length, nil) != .NONE {
+		return name
+	}
+	return string(buf[:int(length)])
 }

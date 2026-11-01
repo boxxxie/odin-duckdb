@@ -150,6 +150,8 @@ reflect_struct_mappings :: proc($T: typeid, allocator := context.temp_allocator)
 }
 
 // Generates a `CREATE TABLE [IF NOT EXISTS] <table_name> (...)` DDL statement from an Odin struct `$T`.
+// Identifiers are rendered through `v2_quote_identifier` (`duckdb_v2_identifier_render_quoted`) so bare
+// identifiers pass through while SQL reserved words or spaces are double-quoted.
 create_table_sql :: proc(
 	$T: typeid,
 	table_name: string,
@@ -158,11 +160,12 @@ create_table_sql :: proc(
 ) -> string where intrinsics.type_is_struct(T) {
 	mappings := reflect_struct_mappings(T, allocator)
 	b := strings.builder_make(allocator)
+	quoted_table := v2_quote_identifier(table_name, true, allocator)
 
 	if if_not_exists {
-		fmt.sbprintf(&b, "CREATE TABLE IF NOT EXISTS %s (", table_name)
+		fmt.sbprintf(&b, "CREATE TABLE IF NOT EXISTS %s (", quoted_table)
 	} else {
-		fmt.sbprintf(&b, "CREATE TABLE %s (", table_name)
+		fmt.sbprintf(&b, "CREATE TABLE %s (", quoted_table)
 	}
 
 	col_idx := 0
@@ -175,7 +178,7 @@ create_table_sql :: proc(
 		}
 		col_idx += 1
 
-		fmt.sbprintf(&b, "%s %s", m.column_name, m.sql_type)
+		fmt.sbprintf(&b, "%s %s", v2_quote_identifier(m.column_name, false, allocator), m.sql_type)
 		if m.is_pk {
 			strings.write_string(&b, " PRIMARY KEY")
 		}
@@ -357,14 +360,14 @@ append_slice :: proc(
 		batch_start += batch_len
 	}
 
-	// Build `INSERT INTO <table> (<cols...>) SELECT * FROM __odin_append_src` and register the collection:
+	// Build `INSERT INTO <table> (<cols...>) SELECT * FROM __odin_append_src` with quoted identifiers:
 	sql_b := strings.builder_make(context.temp_allocator)
-	fmt.sbprintf(&sql_b, "INSERT INTO %s (", table_name)
+	fmt.sbprintf(&sql_b, "INSERT INTO %s (", v2_quote_identifier(table_name, true, context.temp_allocator))
 	for f, idx in active_fields {
 		if idx > 0 {
 			strings.write_string(&sql_b, ", ")
 		}
-		strings.write_string(&sql_b, f.column_name)
+		strings.write_string(&sql_b, v2_quote_identifier(f.column_name, false, context.temp_allocator))
 	}
 	strings.write_string(&sql_b, ") SELECT * FROM __odin_append_src")
 	c_sql := strings.clone_to_cstring(strings.to_string(sql_b), context.temp_allocator)
@@ -403,7 +406,9 @@ append_slice :: proc(
 	return duckdb_v2_result_drain(res, &rows_changed, err)
 }
 
-// Executes `sql` via C API v2 and unmarshals the returned vectors directly into `[dynamic]T`.
+// Executes `sql` via C API v2, matches result columns by name against struct `duckdb:"..."` tags
+// (with positional fallback when unaliased), verifies runtime `V2_Logical_Type_Id` compatibility
+// before dereferencing vector buffers, and unmarshals the returned rows into `[dynamic]T`.
 query_as :: proc(
 	conn: V2_Connection_Handle,
 	$T: typeid,
@@ -442,6 +447,70 @@ query_as :: proc(
 	}
 	defer duckdb_v2_result_destroy(&res)
 
+	// Inspect the result schema to map result column index -> `active_fields` index by column name
+	// and validate runtime `V2_Logical_Type_Id` before casting `view.data`.
+	schema: V2_Schema_Handle
+	rc = duckdb_v2_result_get_schema(res, &schema, err)
+	if rc != .NONE {
+		return out, rc
+	}
+	defer duckdb_v2_schema_destroy(&schema)
+
+	schema_col_count: V2_Idx
+	rc = duckdb_v2_schema_get_count(schema, &schema_col_count, err)
+	if rc != .NONE {
+		return out, rc
+	}
+
+	col_to_field := make([]int, int(schema_col_count), context.temp_allocator)
+	for i := 0; i < int(schema_col_count); i += 1 {
+		col_to_field[i] = -1
+	}
+
+	for col_idx: V2_Idx = 0; col_idx < schema_col_count; col_idx += 1 {
+		col_name_ident: V2_Identifier
+		col_type_handle: V2_Logical_Type_Handle // Borrowed from `schema` (`duckdb_v2.h` line 4720); do NOT destroy.
+		rc = duckdb_v2_schema_get_field(schema, col_idx, &col_name_ident, &col_type_handle, err)
+		if rc != .NONE {
+			return out, rc
+		}
+
+		col_type_id: V2_Logical_Type_Id
+		rc = duckdb_v2_logical_type_get_id(col_type_handle, &col_type_id, err)
+		if rc != .NONE {
+			return out, rc
+		}
+
+		col_name := v2_str_to_string(col_name_ident)
+		matched_field_idx := -1
+		for f, f_idx in active_fields {
+			if strings.equal_fold(f.column_name, col_name) || strings.equal_fold(f.field_name, col_name) {
+				matched_field_idx = f_idx
+				break
+			}
+		}
+
+		if matched_field_idx >= 0 {
+			f := active_fields[matched_field_idx]
+			if col_type_id != f.type_id {
+				if err != nil && err^ != nil {
+					msg := v2_str_from_string(
+						fmt.tprintf(
+							"query_as column '%s' type mismatch: expected %v, got %v",
+							col_name,
+							f.type_id,
+							col_type_id,
+						),
+					)
+					_ = duckdb_v2_error_info_set_code(err^, .INPUT_INVALID)
+					_ = duckdb_v2_error_info_set_text(err^, &msg)
+				}
+				return out, .INPUT_INVALID
+			}
+			col_to_field[int(col_idx)] = matched_field_idx
+		}
+	}
+
 	for {
 		chunk: V2_Data_Chunk_Handle
 		rc = duckdb_v2_result_fetch_chunk(res, &chunk, err)
@@ -465,13 +534,16 @@ query_as :: proc(
 			return out, rc
 		}
 
-		col_limit := len(active_fields)
+		col_limit := int(schema_col_count)
 		if int(vec_count) < col_limit {
 			col_limit = int(vec_count)
 		}
 
 		views := make([]V2_Vector_View, col_limit, context.temp_allocator)
 		for col_idx := 0; col_idx < col_limit; col_idx += 1 {
+			if col_to_field[col_idx] < 0 {
+				continue
+			}
 			vec: V2_Vector_Handle
 			rc = duckdb_v2_data_chunk_get_vector(chunk, V2_Idx(col_idx), &vec, err)
 			if rc != .NONE {
@@ -488,7 +560,11 @@ query_as :: proc(
 			item_bytes := cast([^]u8)&item
 
 			for col_idx := 0; col_idx < col_limit; col_idx += 1 {
-				f := active_fields[col_idx]
+				field_idx := col_to_field[col_idx]
+				if field_idx < 0 {
+					continue
+				}
+				f := active_fields[field_idx]
 				view := views[col_idx]
 				if !v2_row_is_valid(view, r) {
 					continue
