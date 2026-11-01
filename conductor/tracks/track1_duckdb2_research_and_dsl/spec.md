@@ -6,15 +6,33 @@ Gather and synthesize all technical resources, reference implementations (C, Rus
 ---
 
 ## 2. Local Environment & Binary Inventory
-Before writing or linking code, agents working on `boxxxie/odin-duckdb` must account for the two DuckDB installations on this system:
+Before writing or linking code, agents working on `boxxxie/odin-duckdb` must account for the DuckDB installations and reference repositories on this system:
 
 | Artifact | Path | Version | Capabilities & Notes |
 |----------|------|---------|----------------------|
 | **DuckDB 2.0 CLI Binary** | `/home/pauli/.local/bin/duckdb` | `v2.0.0 (Cyanoptera) d54cbbe3df` | Full DuckDB 2.0 engine with built-in **`quack` protocol extension** (`quack_serve`, `quack_stop`, `TYPE quack` secret & attach, `quack_query`). **CRITICAL:** Always pass `-dark-mode` (or `-light-mode`) in non-interactive shells/subprocesses to avoid a 5-second terminal background probe timeout. |
-| **System C Shared Library & Header** | `/usr/lib/libduckdb.so` & `/usr/include/duckdb.h` | `v1.5.6-1` (Arch package) | 10,342-line C API header used by `foreign import duckdb_lib "system:duckdb"`. Supports the full C API (`duckdb_open_ext`, `duckdb_prepare`, `duckdb_appender`, `duckdb_data_chunk`, `duckdb_vector`, replacement scans, scalar/table functions). |
-| **QuackDB Cached Shared Library** | `/home/pauli/.cache/quackdb/duckdb/1.5.6/linux-amd64/libduckdb.so` | `v1.5.6` | Cached by Elixir `quackdb` NIF builds. |
+| **DuckDB 2.0 C Shared Library & C API v1/v2 Headers** | `/home/pauli/.local/lib/libduckdb.so` & `/home/pauli/.local/include/duckdb_v2.h` (`duckdb.h`) | `v2.0.0 (Cyanoptera) d54cbbe3df` | Full 92 MB DuckDB 2.0 shared library exporting **both** the C API v1 (`duckdb_*`) and the **635 new DuckDB 2.0 C API v2 (`duckdb_v2_*`) symbols** (`duckdb_v2.h`, `duckdb_extension_v2.h`). |
+| **System C Shared Library & Header** | `/usr/lib/libduckdb.so` & `/usr/include/duckdb.h` | `v1.5.6-1` (Arch package) | 10,342-line C API v1 header used by default `system:duckdb` when `-L/home/pauli/.local/lib` is not passed. |
 | **Rust Reference Implementation (`llim`)** | `/home/pauli/projects/llim/src/stores.rs` | DuckDB 2.0 + Quack | Production Rust implementation of `DuckDbHandle` and `LinearStore` managing a persistent DuckDB 2.0 worker process and `quack_serve` daemon on `quack:127.0.0.1:9494`. |
 | **Odin SSG Integration** | `/home/pauli/projects/odin/ssg/ssg/duckdb.odin` & `telemetry.odin` | Odin `dev-2026-09` | Proven C API bindings for schema discovery (`DESCRIBE`), `site_data.duckdb` table ingestion, and `.ssg/telemetry.duckdb` persistence. |
+
+### Cloned Reference Repositories (`references/` — gitignored)
+All reference libraries across C, DuckDB 2.0, Odin, Zig, Rust, Go, Elixir, and Node are cloned locally under `references/`:
+- **DuckDB 2.0 & Quack Protocol (`references/duckdb2/`):**
+  - `references/duckdb2/duckdb-quack`: Official C++ implementation of the DuckDB 2.0 `quack` client/server extension (`quack_serve`, `quack_stop`, `quack_server_list`, `quack_active_connections`, `quack_cancel`, `quack_clear_cache`, `quack_identify`, `whoami`, `TYPE quack` secrets with `EXTRA_HTTP_HEADERS` & `SSL_FINGERPRINT`).
+  - `references/duckdb2/duckdb-claude-plugin`: Official DuckDB 2.0 SQL dialect & migration specification (`skills/duckdb-sql/SKILL.md`, `skills/duckdb-upgrade/SKILL.md`).
+  - `references/duckdb2/ducklake`: Official DuckLake integrated data lake and catalog format extension.
+- **DuckDB 2.0 C API v1 & v2 (`references/c/`):**
+  - `references/c/duckdb-capi-2.0`: Sparse checkout of `duckdb/duckdb` (`main` v2.0.0) containing `src/include/duckdb_v2.h`, `src/include/duckdb.h`, `api_spec/v1/`, `api_spec/v2/`, `src/main/capi/v1/`, `src/main/capi/v2/`, and `test/api/capi/v2/`.
+  - `references/c/capigen`: Declarative YAML C ABI schema & code generator used by DuckDB 2.0 (`v1` and `v2` specs).
+  - `references/c/extension-template-c` & `references/c/reference-extension-c`: Official C API extension templates and test suite.
+- **Systems & Language Bindings (`references/{odin,zig,rust,go,elixir,node}/`):**
+  - `references/odin/lionel626-duckdb-odin` & `references/odin/themartian0x48-duckdb-odin`
+  - `references/zig/zuckdb.zig`: High-quality Zig driver demonstrating zero-copy vectorized chunk decoding, `Appender`, and arena memory management.
+  - `references/rust/duckdb-rs`: Official ergonomic Rust wrapper (`libduckdb-sys` + `duckdb`).
+  - `references/go/duckdb-go-bindings` & `references/go/duckdb-go`: Official Go C API bindings and driver.
+  - `references/elixir/quackdb` & `references/elixir/duckdbex`: Elixir NIF bindings.
+  - `references/node/duckdb-node-neo`: Next-gen DuckDB Node.js client built directly on the modern C API.
 
 ### Bridging `libduckdb.so` and DuckDB 2.0 (`Cyanoptera`)
 Because `/usr/lib/libduckdb.so` may come from system packages (`1.5.x`) while `/home/pauli/.local/bin/duckdb` is `v2.0.0 (Cyanoptera)` with the `quack` extension:

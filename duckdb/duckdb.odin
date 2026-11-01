@@ -164,13 +164,6 @@ Database :: struct {
 	path: string,
 }
 
-Quack_Config :: struct {
-	endpoint:    string, // e.g., "quack:127.0.0.1:9494"
-	token:       string,
-	secret_name: string, // default: "quack_auth"
-	alias_name:  string, // default: "remote_db"
-}
-
 open :: proc(path: string = "", low_memory: bool = false) -> (Database, string, bool) {
 	d: Database
 	d.path = path
@@ -222,39 +215,4 @@ exec :: proc(d: ^Database, sql: string) -> (string, bool) {
 sql_escape :: proc(s: string, allocator := context.temp_allocator) -> string {
 	res, _ := strings.replace_all(s, "'", "''", allocator)
 	return res
-}
-
-// Build DuckDB 2.0 Quack Server startup SQL (`CALL quack_serve(...)`)
-quack_serve_sql :: proc(endpoint: string, token: string = "", allocator := context.temp_allocator) -> string {
-	ep := len(endpoint) > 0 ? endpoint : "quack:127.0.0.1:9494"
-	if len(token) > 0 {
-		return fmt.aprintf(
-			"INSTALL quack; LOAD quack; CALL quack_serve('%s', token => '%s');",
-			sql_escape(ep),
-			sql_escape(token),
-			allocator = allocator,
-		)
-	}
-	return fmt.aprintf("INSTALL quack; LOAD quack; CALL quack_serve('%s');", sql_escape(ep), allocator = allocator)
-}
-
-// Build DuckDB 2.0 Quack Client attachment SQL (`CREATE SECRET ... TYPE quack; ATTACH ... (TYPE quack);`)
-quack_attach_sql :: proc(cfg: Quack_Config, allocator := context.temp_allocator) -> string {
-	ep := len(cfg.endpoint) > 0 ? cfg.endpoint : "quack:127.0.0.1:9494"
-	secret := len(cfg.secret_name) > 0 ? cfg.secret_name : "quack_auth"
-	alias := len(cfg.alias_name) > 0 ? cfg.alias_name : "remote_db"
-
-	sb := strings.builder_make(allocator)
-	strings.write_string(&sb, "INSTALL quack; LOAD quack;\n")
-	if len(cfg.token) > 0 {
-		fmt.sbprintf(
-			&sb,
-			"CREATE OR REPLACE SECRET %s (TYPE quack, SCOPE '%s', TOKEN '%s');\n",
-			secret,
-			sql_escape(ep),
-			sql_escape(cfg.token),
-		)
-	}
-	fmt.sbprintf(&sb, "ATTACH IF NOT EXISTS '%s' AS %s (TYPE quack);", sql_escape(ep), alias)
-	return strings.to_string(sb)
 }
