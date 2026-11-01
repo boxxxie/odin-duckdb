@@ -1,12 +1,12 @@
 # Track 1 Specification: DuckDB 2.0, Quack Protocol & Odin DSL Resource Compendium
 
 ## 1. Objective & Scope
-Gather and synthesize all technical resources, reference implementations (C, Rust, Elixir, Odin), protocol specifications (**DuckDB 2.0** & the **Quack IPC/RPC protocol**), and **Odin DSL** design patterns needed to build `boxxxie/duckdb`—a production-grade DuckDB 2.0 library for Odin (`dev-2026-09`).
+Gather and synthesize all technical resources, reference implementations (C, Rust, Elixir, Odin), protocol specifications (**DuckDB 2.0** & the **Quack IPC/RPC protocol**), and **Odin DSL** design patterns needed to build `boxxxie/odin-duckdb`—a production-grade DuckDB 2.0 library for Odin (`dev-2026-09`).
 
 ---
 
 ## 2. Local Environment & Binary Inventory
-Before writing or linking code, agents working on `boxxxie/duckdb` must account for the two DuckDB installations on this system:
+Before writing or linking code, agents working on `boxxxie/odin-duckdb` must account for the two DuckDB installations on this system:
 
 | Artifact | Path | Version | Capabilities & Notes |
 |----------|------|---------|----------------------|
@@ -89,7 +89,7 @@ SET preserve_insertion_order = false;
 ## 4. Reference Implementations Across Languages
 
 ### 4.1 C API Reference (`/usr/include/duckdb.h`)
-The 10,342-line `/usr/include/duckdb.h` header exposes 6 primary subsystems that `boxxxie/duckdb` should wrap idiomatically:
+The 10,342-line `/usr/include/duckdb.h` header exposes 6 primary subsystems that `boxxxie/odin-duckdb` should wrap idiomatically:
 
 1. **Database, Config & Connection (`duckdb_open_ext`, `duckdb_connect`):**
    - Use `duckdb_create_config` + `duckdb_set_config` + `duckdb_open_ext(path, &db, cfg, &err)` so open-time errors (such as file lock conflicts or read-only mode `access_mode = READ_ONLY`) return structured diagnostic strings instead of generic `.DuckDBError`.
@@ -130,11 +130,11 @@ The 10,342-line `/usr/include/duckdb.h` header exposes 6 primary subsystems that
   - Inspiration for Odin: **Pipeline-oriented query composition** (similar to Elixir's `Ecto.Query`) where query fragments are value types (`Query` struct) that can be composed and inspected before execution.
 
 ### 4.4 Audit of Existing Odin DuckDB Libraries
-| Repository | Approach | Limitations | How `boxxxie/duckdb` Improves |
+| Repository | Approach | Limitations | How `boxxxie/odin-duckdb` Improves |
 |------------|----------|-------------|-------------------------------|
 | `lionel626/duckdb-odin` | Hand-written raw C bindings for `DUCKDB_API_0_3_2` (archived July 2024) | Missing DuckDB 1.x/2.0 APIs, no Odin wrappers, no allocator integration, no Quack support. | Targets modern DuckDB 1.5+/2.0, full vectorized chunk + prepared + appender APIs, Quack protocol, Odin allocators. |
 | `TheMartian0x48/duckdb-odin` | Raw `odin-c-bindgen` dump of `duckdb.h` | Hardcodes 20+ static `.a` archive paths, exposes raw `[^]c.char` pointers everywhere, zero idiomatic Odin helpers. | Clean `foreign import` linking, safe Odin slice/string views over `duckdb_string_t`, reflection & DSL layers. |
-| `boxxxie/ssg` (`ssg/duckdb.odin`) | Pragmatic C bindings + `DESCRIBE` introspection + `sources_gen.cue` / `schema_gen.odin` codegen | Scoped to SSG workspace ingestion and telemetry (`duckdb_value_varchar` cell fetching). | Extracted and generalized into `boxxxie/duckdb` with vectorized chunks, prepared statements, Quack client/server, and query DSL. |
+| `boxxxie/ssg` (`ssg/duckdb.odin`) | Pragmatic C bindings + `DESCRIBE` introspection + `sources_gen.cue` / `schema_gen.odin` codegen | Scoped to SSG workspace ingestion and telemetry (`duckdb_value_varchar` cell fetching). | Extracted and generalized into `boxxxie/odin-duckdb` with vectorized chunks, prepared statements, Quack client/server, and query DSL. |
 
 ---
 

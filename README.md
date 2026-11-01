@@ -1,4 +1,4 @@
-# `duckdb` — DuckDB 2.0, Quack Protocol & Query DSL for Odin
+# `odin-duckdb` (`duckdb`) — DuckDB 2.0, Quack Protocol & Query DSL for Odin
 
 An ergonomic, zero-overhead **DuckDB 2.0** library, **Quack protocol** client/server toolkit, and **relational query & schema DSL** for **Odin** (`dev-2026-09`).
 
