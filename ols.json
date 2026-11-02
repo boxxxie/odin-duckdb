@@ -6,6 +6,6 @@
 	"enable_snippets": true,
 	"profile": "default",
 	"profiles": [
-		{ "name": "default", "checker_path": ["duckdb", "tests"] }
+		{ "name": "default", "checker_path": ["duckdb", "tests", "benchmarks"] }
 	]
 }
