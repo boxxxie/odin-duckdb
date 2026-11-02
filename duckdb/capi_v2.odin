@@ -1807,18 +1807,145 @@ v2_consume_error_text :: proc(
 	return code, message
 }
 
-// Boxes an arbitrary Odin scalar, `string`, `[]u8`, `V2_Hugeint`, `V2_Uhugeint`, `V2_Interval`,
-// `Maybe(T)`, or `nil` into a `V2_Value_Handle` for parameterized query execution.
-v2_create_value_from_any :: proc(
+// Value-semantic parameter union used by `Query` (`query_bind` / `query_where_bind`) so bound
+// arguments never retain dangling stack pointers if a `Query` is returned across stack frames.
+Query_Param :: union {
+	bool,
+	i8,
+	i16,
+	i32,
+	i64,
+	u8,
+	u16,
+	u32,
+	u64,
+	f32,
+	f64,
+	string,
+	[]u8,
+	V2_Hugeint,
+	V2_Uhugeint,
+	V2_Interval,
+	V2_Value_Handle,
+	V2_Logical_Type_Id, // Represents a SQL NULL of the given logical type (`.SQLNULL` for untyped `nil`)
+}
+
+// Boxes an Odin `any` value into a self-contained `Query_Param` by value (dereferencing stack pointers
+// immediately so the returned `Query_Param` can safely outlive the caller's stack frame).
+v2_box_query_param :: proc(arg: any) -> (param: Query_Param, ok: bool) {
+	if arg == nil || arg.data == nil {
+		return V2_Logical_Type_Id.SQLNULL, true
+	}
+
+	switch v in arg {
+	case Query_Param:
+		return v, true
+	case bool:
+		return v, true
+	case i8:
+		return v, true
+	case i16:
+		return v, true
+	case i32:
+		return v, true
+	case i64:
+		return v, true
+	case int:
+		return i64(v), true
+	case u8:
+		return v, true
+	case u16:
+		return v, true
+	case u32:
+		return v, true
+	case u64:
+		return v, true
+	case uint:
+		return u64(v), true
+	case f32:
+		return v, true
+	case f64:
+		return v, true
+	case string:
+		return v, true
+	case cstring:
+		return string(v), true
+	case []u8:
+		return v, true
+	case V2_Value_Handle:
+		return v, true
+	case V2_Hugeint:
+		return v, true
+	case V2_Uhugeint:
+		return v, true
+	case V2_Interval:
+		return v, true
+	case V2_Logical_Type_Id:
+		return v, true
+	}
+
+	ti := reflect.type_info_base(type_info_of(arg.id))
+	if u, is_u := ti.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
+		sub := reflect.get_union_variant(arg)
+		if sub == nil {
+			_, tid, type_ok := odin_type_to_duckdb_sql(u.variants[0])
+			return (tid if type_ok else V2_Logical_Type_Id.SQLNULL), true
+		}
+		return v2_box_query_param(sub)
+	}
+
+	#partial switch v in ti.variant {
+	case reflect.Type_Info_Boolean:
+		return (cast(^bool)arg.data)^, true
+	case reflect.Type_Info_Integer:
+		if v.signed {
+			switch ti.size {
+			case 1:
+				return (cast(^i8)arg.data)^, true
+			case 2:
+				return (cast(^i16)arg.data)^, true
+			case 4:
+				return (cast(^i32)arg.data)^, true
+			case 8:
+				return (cast(^i64)arg.data)^, true
+			}
+		} else {
+			switch ti.size {
+			case 1:
+				return (cast(^u8)arg.data)^, true
+			case 2:
+				return (cast(^u16)arg.data)^, true
+			case 4:
+				return (cast(^u32)arg.data)^, true
+			case 8:
+				return (cast(^u64)arg.data)^, true
+			}
+		}
+	case reflect.Type_Info_Float:
+		switch ti.size {
+		case 4:
+			return (cast(^f32)arg.data)^, true
+		case 8:
+			return (cast(^f64)arg.data)^, true
+		}
+	case reflect.Type_Info_String:
+		if v.is_cstring {
+			return string((cast(^cstring)arg.data)^), true
+		}
+		return (cast(^string)arg.data)^, true
+	}
+
+	return nil, false
+}
+
+// Clones an existing `V2_Value_Handle` into an independently owned `out_val` handle.
+v2_clone_value :: proc(
 	factory: V2_Factory_Handle,
-	arg: any,
+	val: V2_Value_Handle,
 	out_val: ^V2_Value_Handle,
 	err: ^V2_Error_Info_Handle = nil,
 ) -> V2_Error {
-	if out_val != nil {
-		out_val^ = nil
-	}
-	if arg == nil || arg.data == nil {
+	if val == nil {
 		sql_null_type: V2_Logical_Type_Handle
 		if rc := duckdb_v2_factory_create_type_from_id(factory, .SQLNULL, nil, nil, 0, &sql_null_type, err); rc != .NONE {
 			return rc
@@ -1826,8 +1953,33 @@ v2_create_value_from_any :: proc(
 		defer duckdb_v2_logical_type_destroy(&sql_null_type)
 		return duckdb_v2_value_create_null(factory, sql_null_type, out_val, err)
 	}
+	val_type: V2_Logical_Type_Handle
+	if rc := duckdb_v2_value_get_logical_type(val, &val_type, err); rc != .NONE {
+		return rc
+	}
+	defer duckdb_v2_logical_type_destroy(&val_type)
 
-	switch v in arg {
+	is_null: bool
+	if rc := duckdb_v2_value_is_null(val, &is_null, err); rc != .NONE {
+		return rc
+	}
+	if is_null {
+		return duckdb_v2_value_create_null(factory, val_type, out_val, err)
+	}
+	return duckdb_v2_value_cast(factory, val, val_type, out_val, err)
+}
+
+// Creates a newly owned `V2_Value_Handle` from a `Query_Param`.
+v2_create_value_from_query_param :: proc(
+	factory: V2_Factory_Handle,
+	param: Query_Param,
+	out_val: ^V2_Value_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_val != nil {
+		out_val^ = nil
+	}
+	switch v in param {
 	case bool:
 		return duckdb_v2_value_create_bool(factory, v, out_val, err)
 	case i8:
@@ -1838,8 +1990,6 @@ v2_create_value_from_any :: proc(
 		return duckdb_v2_value_create_int(factory, v, out_val, err)
 	case i64:
 		return duckdb_v2_value_create_bigint(factory, v, out_val, err)
-	case int:
-		return duckdb_v2_value_create_bigint(factory, i64(v), out_val, err)
 	case u8:
 		return duckdb_v2_value_create_utinyint(factory, v, out_val, err)
 	case u16:
@@ -1848,8 +1998,6 @@ v2_create_value_from_any :: proc(
 		return duckdb_v2_value_create_uint(factory, v, out_val, err)
 	case u64:
 		return duckdb_v2_value_create_ubigint(factory, v, out_val, err)
-	case uint:
-		return duckdb_v2_value_create_ubigint(factory, u64(v), out_val, err)
 	case f32:
 		return duckdb_v2_value_create_float(factory, v, out_val, err)
 	case f64:
@@ -1857,15 +2005,9 @@ v2_create_value_from_any :: proc(
 	case string:
 		s := v2_str_from_string(v)
 		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
-	case cstring:
-		s := v2_str_from_string(string(v))
-		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
 	case []u8:
 		s := V2_Str{ptr = raw_data(v), len = V2_Idx(len(v))}
 		return duckdb_v2_value_create_blob(factory, &s, out_val, err)
-	case V2_Value_Handle:
-		out_val^ = v
-		return .NONE
 	case V2_Hugeint:
 		tmp := v
 		return duckdb_v2_value_create_hugeint(factory, &tmp, out_val, err)
@@ -1875,71 +2017,67 @@ v2_create_value_from_any :: proc(
 	case V2_Interval:
 		tmp := v
 		return duckdb_v2_value_create_interval(factory, &tmp, out_val, err)
+	case V2_Value_Handle:
+		return v2_clone_value(factory, v, out_val, err)
+	case V2_Logical_Type_Id:
+		null_t: V2_Logical_Type_Handle
+		if rc := duckdb_v2_factory_create_type_from_id(factory, v, nil, nil, 0, &null_t, err); rc != .NONE {
+			return rc
+		}
+		defer duckdb_v2_logical_type_destroy(&null_t)
+		return duckdb_v2_value_create_null(factory, null_t, out_val, err)
 	}
-
-	ti := reflect.type_info_base(type_info_of(arg.id))
-	if u, is_u := ti.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
-		sub := reflect.get_union_variant(arg)
-		if sub == nil {
-			_, tid, ok := odin_type_to_duckdb_sql(u.variants[0])
-			if !ok {
-				tid = .SQLNULL
-			}
-			null_t: V2_Logical_Type_Handle
-			if rc := duckdb_v2_factory_create_type_from_id(factory, tid, nil, nil, 0, &null_t, err); rc != .NONE {
-				return rc
-			}
-			defer duckdb_v2_logical_type_destroy(&null_t)
-			return duckdb_v2_value_create_null(factory, null_t, out_val, err)
-		}
-		return v2_create_value_from_any(factory, sub, out_val, err)
-	}
-
-	#partial switch v in ti.variant {
-	case reflect.Type_Info_Boolean:
-		return duckdb_v2_value_create_bool(factory, (cast(^bool)arg.data)^, out_val, err)
-	case reflect.Type_Info_Integer:
-		if v.signed {
-			switch ti.size {
-			case 1:
-				return duckdb_v2_value_create_tinyint(factory, (cast(^i8)arg.data)^, out_val, err)
-			case 2:
-				return duckdb_v2_value_create_smallint(factory, (cast(^i16)arg.data)^, out_val, err)
-			case 4:
-				return duckdb_v2_value_create_int(factory, (cast(^i32)arg.data)^, out_val, err)
-			case 8:
-				return duckdb_v2_value_create_bigint(factory, (cast(^i64)arg.data)^, out_val, err)
-			}
-		} else {
-			switch ti.size {
-			case 1:
-				return duckdb_v2_value_create_utinyint(factory, (cast(^u8)arg.data)^, out_val, err)
-			case 2:
-				return duckdb_v2_value_create_usmallint(factory, (cast(^u16)arg.data)^, out_val, err)
-			case 4:
-				return duckdb_v2_value_create_uint(factory, (cast(^u32)arg.data)^, out_val, err)
-			case 8:
-				return duckdb_v2_value_create_ubigint(factory, (cast(^u64)arg.data)^, out_val, err)
-			}
-		}
-	case reflect.Type_Info_Float:
-		switch ti.size {
-		case 4:
-			return duckdb_v2_value_create_float(factory, (cast(^f32)arg.data)^, out_val, err)
-		case 8:
-			return duckdb_v2_value_create_double(factory, (cast(^f64)arg.data)^, out_val, err)
-		}
-	case reflect.Type_Info_String:
-		if v.is_cstring {
-			cs := (cast(^cstring)arg.data)^
-			s := v2_str_from_string(string(cs))
-			return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
-		}
-		s := v2_str_from_string((cast(^string)arg.data)^)
-		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
-	}
-
 	return .INPUT_INVALID
+}
+
+// Boxes an arbitrary Odin scalar, `string`, `[]u8`, `V2_Hugeint`, `V2_Uhugeint`, `V2_Interval`,
+// `V2_Value_Handle` (cloned so caller retains ownership), `Query_Param`, `Maybe(T)`, or `nil`
+// into a newly owned `V2_Value_Handle` for parameterized query execution.
+v2_create_value_from_any :: proc(
+	factory: V2_Factory_Handle,
+	arg: any,
+	out_val: ^V2_Value_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_val != nil {
+		out_val^ = nil
+	}
+	qp, ok := v2_box_query_param(arg)
+	if !ok {
+		return .INPUT_INVALID
+	}
+	return v2_create_value_from_query_param(factory, qp, out_val, err)
+}
+
+@(private = "package")
+v2_destroy_boxed_args :: #force_inline proc(vals: []V2_Value_Handle) {
+	for &v in vals {
+		if v != nil {
+			duckdb_v2_value_destroy(&v)
+		}
+	}
+}
+
+@(private = "package")
+v2_box_args :: proc(
+	factory: V2_Factory_Handle,
+	args: []any,
+	stack_vals: ^[16]V2_Value_Handle,
+	out_vals: ^[]V2_Value_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if len(args) <= len(stack_vals^) {
+		out_vals^ = stack_vals[:len(args)]
+	} else {
+		out_vals^ = make([]V2_Value_Handle, len(args), context.temp_allocator)
+	}
+	for a, idx in args {
+		if rc := v2_create_value_from_any(factory, a, &out_vals^[idx], err); rc != .NONE {
+			v2_destroy_boxed_args(out_vals^[:idx])
+			return rc
+		}
+	}
+	return .NONE
 }
 
 // Parses a single SQL statement from `sql` into `out_stmt`.
@@ -2001,24 +2139,10 @@ v2_query :: proc(
 
 	stack_vals: [16]V2_Value_Handle
 	vals: []V2_Value_Handle
-	if len(args) <= len(stack_vals) {
-		vals = stack_vals[:len(args)]
-	} else {
-		vals = make([]V2_Value_Handle, len(args), context.temp_allocator)
+	if rc = v2_box_args(factory, args, &stack_vals, &vals, err); rc != .NONE {
+		return rc
 	}
-	defer {
-		for &v in vals {
-			if v != nil {
-				duckdb_v2_value_destroy(&v)
-			}
-		}
-	}
-
-	for a, idx in args {
-		if rc = v2_create_value_from_any(factory, a, &vals[idx], err); rc != .NONE {
-			return rc
-		}
-	}
+	defer v2_destroy_boxed_args(vals)
 
 	return duckdb_v2_statement_execute(conn, stmt, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
 }
@@ -2090,6 +2214,31 @@ v2_prepare :: proc(
 	return duckdb_v2_prepared_statement_create(conn, stmt, require_cacheable, out_prepared, err)
 }
 
+// Executes a pre-compiled `V2_Prepared_Statement_Handle` using a cached `factory` handle and optional positional `args`.
+v2_prepared_execute_with_factory :: proc(
+	factory: V2_Factory_Handle,
+	prepared: V2_Prepared_Statement_Handle,
+	out_result: ^V2_Result_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+	args: ..any,
+) -> V2_Error {
+	if out_result != nil {
+		out_result^ = nil
+	}
+	if len(args) == 0 {
+		return duckdb_v2_prepared_statement_execute(prepared, nil, nil, 0, out_result, err)
+	}
+
+	stack_vals: [16]V2_Value_Handle
+	vals: []V2_Value_Handle
+	if rc := v2_box_args(factory, args, &stack_vals, &vals, err); rc != .NONE {
+		return rc
+	}
+	defer v2_destroy_boxed_args(vals)
+
+	return duckdb_v2_prepared_statement_execute(prepared, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
+}
+
 // Executes a pre-compiled `V2_Prepared_Statement_Handle` with optional positional `args` (`..any`).
 v2_prepared_execute :: proc(
 	conn: V2_Connection_Handle,
@@ -2109,29 +2258,7 @@ v2_prepared_execute :: proc(
 	if rc := duckdb_v2_connection_get_factory(conn, &factory, err); rc != .NONE {
 		return rc
 	}
-
-	stack_vals: [16]V2_Value_Handle
-	vals: []V2_Value_Handle
-	if len(args) <= len(stack_vals) {
-		vals = stack_vals[:len(args)]
-	} else {
-		vals = make([]V2_Value_Handle, len(args), context.temp_allocator)
-	}
-	defer {
-		for &v in vals {
-			if v != nil {
-				duckdb_v2_value_destroy(&v)
-			}
-		}
-	}
-
-	for a, idx in args {
-		if rc := v2_create_value_from_any(factory, a, &vals[idx], err); rc != .NONE {
-			return rc
-		}
-	}
-
-	return duckdb_v2_prepared_statement_execute(prepared, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
+	return v2_prepared_execute_with_factory(factory, prepared, out_result, err, ..args)
 }
 
 // Zero-copy helper for executing a static NUL-terminated SQL statement (`cstring`) without any parameters.

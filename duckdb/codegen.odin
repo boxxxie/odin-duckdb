@@ -76,6 +76,15 @@ logical_type_to_sql_name :: proc(
 	}
 }
 
+@(private = "file")
+destroy_column_schemas :: proc(cols: ^[dynamic]Column_Schema, allocator := context.allocator) {
+	for c in cols^ {
+		delete(c.name, allocator)
+	}
+	delete(cols^)
+	cols^ = nil
+}
+
 // Introspects any table, view, or query source (`table_or_source`) without executing the query.
 // Uses the C API v2 Catalog fast-path (`duckdb_v2_connection_describe_table`) for base tables (~35x faster)
 // and falls back to `duckdb_v2_statement_bind` + `V2_Schema_Handle` for views, subqueries, and table functions.
@@ -85,6 +94,10 @@ introspect_table_schema :: proc(
 	allocator := context.allocator,
 	err: ^V2_Error_Info_Handle = nil,
 ) -> (cols: [dynamic]Column_Schema, rc: V2_Error) {
+	defer if rc != .NONE {
+		destroy_column_schemas(&cols, allocator)
+	}
+
 	is_identifier := !strings.contains_any(table_or_source, "() '\"\t\n")
 	if is_identifier {
 		qname_str := v2_str_from_string(table_or_source)

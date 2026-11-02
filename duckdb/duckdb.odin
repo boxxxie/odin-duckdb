@@ -5,9 +5,9 @@ import "core:fmt"
 import "core:strings"
 
 when ODIN_OS == .Linux || ODIN_OS == .Darwin {
-	foreign import duckdb_lib "system:duckdb"
+	foreign import libduckdb "system:duckdb"
 } else when ODIN_OS == .Windows {
-	foreign import duckdb_lib "duckdb.lib"
+	foreign import libduckdb "duckdb.lib"
 }
 
 // ============================================================================
@@ -79,20 +79,10 @@ duckdb_result :: struct {
 }
 
 // DuckDB inline/pointer string representation in vectorized data chunks (16 bytes)
-duckdb_string_t :: struct #raw_union {
-	pointer: struct {
-		length: u32,
-		prefix: [4]c.char,
-		ptr:    [^]c.char,
-	},
-	inlined: struct {
-		length:  u32,
-		inlined: [12]c.char,
-	},
-}
+duckdb_string_t :: V2_Bytes
 
 @(default_calling_convention = "c")
-foreign duckdb_lib {
+foreign libduckdb {
 	// Database & Connection Lifecycle
 	duckdb_open :: proc(path: cstring, out_database: ^duckdb_database) -> duckdb_state ---
 	duckdb_open_ext :: proc(path: cstring, out_database: ^duckdb_database, config: duckdb_config, out_error: ^cstring) -> duckdb_state ---
