@@ -310,62 +310,64 @@ odin check duckdb -no-entry-point
 # Run the full ATDD executable specification suite
 odin test tests
 
-# Run the throughput & latency benchmark suite
+# Run the throughput & latency benchmark suite (also appends a JSONL snapshot to benchmarks/history.jsonl)
 odin run benchmarks -o:speed
 ```
 
 ### Baseline Benchmark Results (`-o:speed`)
 
+Each run of `odin run benchmarks -o:speed` prints the Markdown summary table below and automatically appends a structured JSONL record (`timestamp_unix_ns`, `os`, `arch`, and per-benchmark `median_ns`, `min_ns`, `max_ns`, `ops_per_sec`, `mb_per_sec`, `ns_per_item`) to [`benchmarks/history.jsonl`](benchmarks/history.jsonl) for historical tracking and DuckDB-native querying (`SELECT * FROM read_ndjson_objects('benchmarks/history.jsonl')`).
+
 | Benchmark | Items / Op | Median Time | Min Time | Throughput (ops/s) | Bandwidth (MB/s) | Latency (ns/item) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1a. Ingest: V2 Prepared Statement Loop (2K rows) | 2000 | 293.173 ms | 287.762 ms | 6.82 K/s | 0.2 MB/s | 146586.4 ns |
-| 1b. Ingest: Legacy V1 Appender API (100K rows) | 100000 | 16.308 ms | 15.006 ms | 6.13 M/s | 216.4 MB/s | 163.1 ns |
-| 1c. Ingest: V2 ColumnDataCollection `append_slice` (100K rows) | 100000 | 12.056 ms | 10.987 ms | 8.29 M/s | 292.7 MB/s | 120.6 ns |
-| 1d. Ingest: Nullable `Maybe(T)` `append_slice` (100K rows, 25% NULL) | 100000 | 11.620 ms | 11.167 ms | 8.61 M/s | 303.7 MB/s | 116.2 ns |
-| 1e. Ingest: Custom `V2_Copy_Function` `COPY ... FROM` (1M rows) | 1000000 | 13.355 ms | 7.760 ms | 74.88 M/s | 1142.5 MB/s | 13.4 ns |
-| 1f. Export: Custom `V2_Copy_Function` `COPY ... TO` Sink (1M rows) | 1000000 | 2.457 ms | 1.969 ms | 407.00 M/s | 6210.4 MB/s | 2.5 ns |
-| 1g. Ingest: `Struct_Appender(T)` 1K x 100-Row Micro-Batches (100K) | 100000 | 16.349 ms | 15.007 ms | 6.12 M/s | 215.8 MB/s | 163.5 ns |
-| 2a. Scan: Zero-Copy `V2_Vector_View` Flat (1M rows) | 1000000 | 4.791 ms | 4.174 ms | 208.71 M/s | 4976.1 MB/s | 4.8 ns |
-| 2b. Scan: Zero-Copy `V2_Selection_Vector` Filtered (1M source rows) | 1000000 | 3.050 ms | 2.974 ms | 327.90 M/s | 7817.9 MB/s | 3.0 ns |
-| 2c. Scan: Arrow C Data Interface `Arrow_Array_Stream` (1M rows) | 1000000 | 5.219 ms | 4.180 ms | 191.62 M/s | 4568.5 MB/s | 5.2 ns |
-| 2d. Unmarshal: `core:reflect` `query_as` Non-Null Structs (100K rows) | 100000 | 6.681 ms | 5.761 ms | 14.97 M/s | 528.2 MB/s | 66.8 ns |
-| 2e. Unmarshal: `core:reflect` `query_as` Nullable `Maybe(T)` (100K rows) | 100000 | 8.188 ms | 8.114 ms | 12.21 M/s | 430.9 MB/s | 81.9 ns |
-| 2f. Scan: Direct `ColumnDataCollection` Worker Scan (1M rows) | 1000000 | 0.785 ms | 0.731 ms | 1274.03 M/s | 19440.1 MB/s | 0.8 ns |
-| 2g. Bridge: `Arrow_Exporter` -> `Arrow_Importer` Round-Trip (200K) | 200000 | 0.616 ms | 0.579 ms | 324.56 M/s | 4952.3 MB/s | 3.1 ns |
-| 2h. Scan: Multi-Worker `ColumnDataCollection` 4-Thread Scan (1M) | 1000000 | 0.402 ms | 0.339 ms | 2484.56 M/s | 37911.4 MB/s | 0.4 ns |
-| 2i. Scan: Cooperative Stepper `v2_step_chunk` (1M rows) | 1000000 | 4.857 ms | 4.100 ms | 205.88 M/s | 4908.6 MB/s | 4.9 ns |
-| 3a. `V2_Bytes` Write: Inline <= 12 B (`v2_vector_assign_string`, 200K) | 200000 | 0.943 ms | 0.829 ms | 212.10 M/s | 2427.3 MB/s | 4.7 ns |
-| 3b. `V2_Bytes` Write: Arena > 12 B (`v2_vector_assign_string`, 200K) | 200000 | 2.721 ms | 2.618 ms | 73.49 M/s | 2242.7 MB/s | 13.6 ns |
-| 3c. Vector Cast: `duckdb_v2_vector_cast` BIGINT -> DOUBLE (200K) | 200000 | 0.056 ms | 0.056 ms | 3556.44 M/s | 54267.0 MB/s | 0.3 ns |
-| 3d. Zero-Copy Alias: `duckdb_v2_vector_reference` (200K rows) | 200000 | 0.001 ms | 0.001 ms | 167785.23 M/s | 2560199.5 MB/s | 0.0 ns |
-| 3e. Vector Flatten: `.OTHER` (`MakeSequence`) -> `.FLAT` (1M rows) | 1000000 | 0.228 ms | 0.225 ms | 4392.96 M/s | 33515.6 MB/s | 0.2 ns |
-| 3f. Wire Codec: 128-Bit `HUGEINT`/`INTERVAL`/`BIT`/`BIGNUM` (200K) | 200000 | 0.226 ms | 0.223 ms | 884.51 M/s | 40489.6 MB/s | 1.1 ns |
-| 4a. JSON Tag Round-Trip: `append_slice` + `query_as` (10K structs) | 10000 | 5.743 ms | 5.549 ms | 1.74 M/s | 106.3 MB/s | 574.3 ns |
-| 4b. Native `STRUCT(...)` Child Vector Write+Read (200K structs) | 200000 | 0.294 ms | 0.290 ms | 679.71 M/s | 16205.7 MB/s | 1.5 ns |
-| 4c. Nested `LIST(BIGINT)` Vector Write+Read (200K lists / 800K items) | 200000 | 0.175 ms | 0.171 ms | 1143.65 M/s | 52352.3 MB/s | 0.9 ns |
-| 4d. Fixed `ARRAY(DOUBLE, 4)` Vector Write+Read (200K arrays / 800K f64) | 200000 | 0.133 ms | 0.128 ms | 1504.55 M/s | 45915.3 MB/s | 0.7 ns |
-| 4e. Composite Values: `VARIANT`/`MAP`/`UNION`/`DECIMAL` (10K ops) | 10000 | 35.163 ms | 34.629 ms | 284.39 K/s | - | 3516.3 ns |
-| 5a. DSL: `query_to_sql` Pipeline Compilation (100K queries) | 100000 | 22.162 ms | 22.156 ms | 4.51 M/s | - | 221.6 ns |
-| 5b. Codegen: `introspect_table_schema` + Odin/CUE (1K tables) | 1000 | 4.365 ms | 4.325 ms | 229.09 K/s | - | 4365.2 ns |
-| 5c. Parser: `sqllogic_parse_script` (50K directives / 1K scripts) | 50000 | 2.819 ms | 2.787 ms | 17.74 M/s | - | 56.4 ns |
-| 5d. Lexer: Native C API v2 `duckdb_v2_tokenize_sql` (300K tokens) | 300000 | 11.639 ms | 11.614 ms | 25.78 M/s | - | 38.8 ns |
-| 5e. Catalog: `duckdb_v2_connection_describe_table` (5K lookups) | 5000 | 14.051 ms | 13.994 ms | 355.85 K/s | - | 2810.1 ns |
-| 5f. Quack: SQL Builders + URI Normalize + Template (100K ops) | 100000 | 7.231 ms | 7.168 ms | 13.83 M/s | - | 72.3 ns |
-| 5g. Reflection DDL: `create_table_sql` + `v2_quote_identifier` (100K) | 100000 | 18.959 ms | 18.854 ms | 5.27 M/s | - | 189.6 ns |
-| 6a. UDF: Vectorized Scalar Callback `odin_fma` (1M rows) | 1000000 | 0.992 ms | 0.964 ms | 1007.75 M/s | 23065.6 MB/s | 1.0 ns |
-| 6b. UDF: Streaming Table Function `odin_gen_series` (1M rows) | 1000000 | 2.618 ms | 2.395 ms | 382.02 M/s | 5829.1 MB/s | 2.6 ns |
-| 6c. UDF: Grouped Hash Aggregate `odin_agg_sum` (1M rows) | 1000000 | 1.780 ms | 1.732 ms | 561.74 M/s | 4285.8 MB/s | 1.8 ns |
-| 6d. UDF: Table Function Projection + Filter Pushdown (1M rows) | 1000000 | 0.431 ms | 0.422 ms | 2319.12 M/s | 35387.0 MB/s | 0.4 ns |
-| 6e. UDF: Custom Type & Vectorized `V2_Cast_Function` (1M rows) | 1000000 | 0.789 ms | 0.751 ms | 1268.17 M/s | 19350.7 MB/s | 0.8 ns |
-| 6f. UDF: `V2_Replacement_Scan` Virtual Table Scan (1K queries) | 1000 | 287.080 ms | 275.041 ms | 3.48 K/s | - | 287080.0 ns |
-| 6g. Extensibility: `V2_Pragma` + `V2_Custom_Option` + `V2_Macro` (1K) | 1000 | 68.015 ms | 67.440 ms | 14.70 K/s | - | 68015.1 ns |
-| 7a. Point Lookup: Ad-Hoc `v2_query` Parse+Bind+Exec (1K queries) | 1000 | 219.809 ms | 215.840 ms | 4.55 K/s | - | 219809.4 ns |
-| 7b. Point Lookup: Pre-Compiled `v2_prepared_execute` (1K queries) | 1000 | 190.238 ms | 184.331 ms | 5.26 K/s | - | 190237.5 ns |
-| 7c. DSL Pipeline: `query_execute_as` Build+Bind+Unmarshal (1K) | 1000 | 414.456 ms | 412.117 ms | 2.41 K/s | 0.1 MB/s | 414455.6 ns |
-| 7d. Transactions: `v2_with_transaction` Commit + Rollback (1K tx) | 1000 | 125.009 ms | 124.322 ms | 8.00 K/s | - | 125008.9 ns |
-| 7e. Prepared DSL: `prepared_query_execute_as` Cached Plan+Schema (1K) | 1000 | 361.787 ms | 339.281 ms | 2.76 K/s | 0.1 MB/s | 361787.1 ns |
-| 8a. VFS: Positional `write_at` + `read_at` (1K x 64 KB = 64 MB) | 1000 | 2.797 ms | 2.622 ms | 357.48 K/s | 22342.7 MB/s | 2797.3 ns |
-| 8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops) | 10000 | 101.159 ms | 100.989 ms | 98.85 K/s | - | 10115.9 ns |
+| 1a. Ingest: V2 Prepared Statement Loop (2K rows) | 2000 | 306.004 ms | 296.228 ms | 6.54 K/s | 0.2 MB/s | 153001.8 ns |
+| 1b. Ingest: Legacy V1 Appender API (100K rows) | 100000 | 16.600 ms | 14.571 ms | 6.02 M/s | 212.6 MB/s | 166.0 ns |
+| 1c. Ingest: V2 ColumnDataCollection `append_slice` (100K rows) | 100000 | 12.511 ms | 11.118 ms | 7.99 M/s | 282.0 MB/s | 125.1 ns |
+| 1d. Ingest: Nullable `Maybe(T)` `append_slice` (100K rows, 25% NULL) | 100000 | 12.788 ms | 11.213 ms | 7.82 M/s | 275.9 MB/s | 127.9 ns |
+| 1e. Ingest: Custom `V2_Copy_Function` `COPY ... FROM` (1M rows) | 1000000 | 14.251 ms | 13.485 ms | 70.17 M/s | 1070.7 MB/s | 14.3 ns |
+| 1f. Export: Custom `V2_Copy_Function` `COPY ... TO` Sink (1M rows) | 1000000 | 2.467 ms | 2.247 ms | 405.27 M/s | 6183.9 MB/s | 2.5 ns |
+| 1g. Ingest: `Struct_Appender(T)` 1K x 100-Row Micro-Batches (100K) | 100000 | 13.258 ms | 12.941 ms | 7.54 M/s | 266.2 MB/s | 132.6 ns |
+| 2a. Scan: Zero-Copy `V2_Vector_View` Flat (1M rows) | 1000000 | 5.444 ms | 4.986 ms | 183.67 M/s | 4379.1 MB/s | 5.4 ns |
+| 2b. Scan: Zero-Copy `V2_Selection_Vector` Filtered (1M source rows) | 1000000 | 3.996 ms | 3.362 ms | 250.25 M/s | 5966.3 MB/s | 4.0 ns |
+| 2c. Scan: Arrow C Data Interface `Arrow_Array_Stream` (1M rows) | 1000000 | 5.782 ms | 4.647 ms | 172.96 M/s | 4123.7 MB/s | 5.8 ns |
+| 2d. Unmarshal: `core:reflect` `query_as` Non-Null Structs (100K rows) | 100000 | 7.280 ms | 6.124 ms | 13.74 M/s | 484.7 MB/s | 72.8 ns |
+| 2e. Unmarshal: `core:reflect` `query_as` Nullable `Maybe(T)` (100K rows) | 100000 | 8.876 ms | 8.138 ms | 11.27 M/s | 397.5 MB/s | 88.8 ns |
+| 2f. Scan: Direct `ColumnDataCollection` Worker Scan (1M rows) | 1000000 | 0.886 ms | 0.721 ms | 1129.13 M/s | 17229.1 MB/s | 0.9 ns |
+| 2g. Bridge: `Arrow_Exporter` -> `Arrow_Importer` Round-Trip (200K) | 200000 | 0.639 ms | 0.612 ms | 313.06 M/s | 4776.9 MB/s | 3.2 ns |
+| 2h. Scan: Multi-Worker `ColumnDataCollection` 4-Thread Scan (1M) | 1000000 | 0.385 ms | 0.341 ms | 2600.77 M/s | 39684.7 MB/s | 0.4 ns |
+| 2i. Scan: Cooperative Stepper `v2_step_chunk` (1M rows) | 1000000 | 5.381 ms | 4.833 ms | 185.84 M/s | 4430.8 MB/s | 5.4 ns |
+| 3a. `V2_Bytes` Write: Inline <= 12 B (`v2_vector_assign_string`, 200K) | 200000 | 0.813 ms | 0.810 ms | 245.89 M/s | 2814.0 MB/s | 4.1 ns |
+| 3b. `V2_Bytes` Write: Arena > 12 B (`v2_vector_assign_string`, 200K) | 200000 | 2.935 ms | 2.905 ms | 68.13 M/s | 2079.3 MB/s | 14.7 ns |
+| 3c. Vector Cast: `duckdb_v2_vector_cast` BIGINT -> DOUBLE (200K) | 200000 | 0.061 ms | 0.060 ms | 3290.88 M/s | 50214.9 MB/s | 0.3 ns |
+| 3d. Zero-Copy Alias: `duckdb_v2_vector_reference` (200K rows) | 200000 | 0.001 ms | 0.001 ms | 159616.92 M/s | 2435560.9 MB/s | 0.0 ns |
+| 3e. Vector Flatten: `.OTHER` (`MakeSequence`) -> `.FLAT` (1M rows) | 1000000 | 0.241 ms | 0.237 ms | 4142.45 M/s | 31604.4 MB/s | 0.2 ns |
+| 3f. Wire Codec: 128-Bit `HUGEINT`/`INTERVAL`/`BIT`/`BIGNUM` (200K) | 200000 | 0.240 ms | 0.236 ms | 833.23 M/s | 38142.0 MB/s | 1.2 ns |
+| 4a. JSON Tag Round-Trip: `append_slice` + `query_as` (10K structs) | 10000 | 5.938 ms | 5.577 ms | 1.68 M/s | 102.8 MB/s | 593.8 ns |
+| 4b. Native `STRUCT(...)` Child Vector Write+Read (200K structs) | 200000 | 0.304 ms | 0.302 ms | 657.55 M/s | 15677.2 MB/s | 1.5 ns |
+| 4c. Nested `LIST(BIGINT)` Vector Write+Read (200K lists / 800K items) | 200000 | 0.180 ms | 0.176 ms | 1110.08 M/s | 50815.2 MB/s | 0.9 ns |
+| 4d. Fixed `ARRAY(DOUBLE, 4)` Vector Write+Read (200K arrays / 800K f64) | 200000 | 0.139 ms | 0.136 ms | 1436.56 M/s | 43840.5 MB/s | 0.7 ns |
+| 4e. Composite Values: `VARIANT`/`MAP`/`UNION`/`DECIMAL` (10K ops) | 10000 | 37.214 ms | 37.007 ms | 268.72 K/s | - | 3721.4 ns |
+| 5a. DSL: `query_to_sql` Pipeline Compilation (100K queries) | 100000 | 23.798 ms | 23.524 ms | 4.20 M/s | - | 238.0 ns |
+| 5b. Codegen: `introspect_table_schema` + Odin/CUE (1K tables) | 1000 | 4.506 ms | 4.502 ms | 221.90 K/s | - | 4506.5 ns |
+| 5c. Parser: `sqllogic_parse_script` (50K directives / 1K scripts) | 50000 | 2.878 ms | 2.874 ms | 17.37 M/s | - | 57.6 ns |
+| 5d. Lexer: Native C API v2 `duckdb_v2_tokenize_sql` (300K tokens) | 300000 | 12.125 ms | 12.074 ms | 24.74 M/s | - | 40.4 ns |
+| 5e. Catalog: `duckdb_v2_connection_describe_table` (5K lookups) | 5000 | 14.691 ms | 14.621 ms | 340.35 K/s | - | 2938.1 ns |
+| 5f. Quack: SQL Builders + URI Normalize + Template (100K ops) | 100000 | 7.788 ms | 7.703 ms | 12.84 M/s | - | 77.9 ns |
+| 5g. Reflection DDL: `create_table_sql` + `v2_quote_identifier` (100K) | 100000 | 19.941 ms | 19.779 ms | 5.01 M/s | - | 199.4 ns |
+| 6a. UDF: Vectorized Scalar Callback `odin_fma` (1M rows) | 1000000 | 1.113 ms | 0.962 ms | 898.64 M/s | 20568.2 MB/s | 1.1 ns |
+| 6b. UDF: Streaming Table Function `odin_gen_series` (1M rows) | 1000000 | 3.228 ms | 2.696 ms | 309.82 M/s | 4727.5 MB/s | 3.2 ns |
+| 6c. UDF: Grouped Hash Aggregate `odin_agg_sum` (1M rows) | 1000000 | 2.086 ms | 1.994 ms | 479.43 M/s | 3657.8 MB/s | 2.1 ns |
+| 6d. UDF: Table Function Projection + Filter Pushdown (1M rows) | 1000000 | 0.493 ms | 0.417 ms | 2027.80 M/s | 30941.8 MB/s | 0.5 ns |
+| 6e. UDF: Custom Type & Vectorized `V2_Cast_Function` (1M rows) | 1000000 | 0.998 ms | 0.980 ms | 1002.13 M/s | 15291.3 MB/s | 1.0 ns |
+| 6f. UDF: `V2_Replacement_Scan` Virtual Table Scan (1K queries) | 1000 | 278.255 ms | 271.748 ms | 3.59 K/s | - | 278255.2 ns |
+| 6g. Extensibility: `V2_Pragma` + `V2_Custom_Option` + `V2_Macro` (1K) | 1000 | 67.527 ms | 65.077 ms | 14.81 K/s | - | 67526.8 ns |
+| 7a. Point Lookup: Ad-Hoc `v2_query` Parse+Bind+Exec (1K queries) | 1000 | 212.599 ms | 211.011 ms | 4.70 K/s | - | 212598.9 ns |
+| 7b. Point Lookup: Pre-Compiled `v2_prepared_execute` (1K queries) | 1000 | 184.253 ms | 183.953 ms | 5.43 K/s | - | 184252.9 ns |
+| 7c. DSL Pipeline: `query_execute_as` Build+Bind+Unmarshal (1K) | 1000 | 454.593 ms | 449.407 ms | 2.20 K/s | 0.1 MB/s | 454592.8 ns |
+| 7d. Transactions: `v2_with_transaction` Commit + Rollback (1K tx) | 1000 | 135.028 ms | 129.914 ms | 7.41 K/s | - | 135028.1 ns |
+| 7e. Prepared DSL: `prepared_query_execute_as` Cached Plan+Schema (1K) | 1000 | 392.483 ms | 376.357 ms | 2.55 K/s | 0.1 MB/s | 392483.1 ns |
+| 8a. VFS: Positional `write_at` + `read_at` (1K x 64 KB = 64 MB) | 1000 | 2.756 ms | 2.739 ms | 362.88 K/s | 22679.9 MB/s | 2755.7 ns |
+| 8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops) | 10000 | 112.263 ms | 108.261 ms | 89.08 K/s | - | 11226.3 ns |
 
 ---
 

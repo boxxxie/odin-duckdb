@@ -129,6 +129,48 @@ print_results_table :: proc(results: []Bench_Result) {
 	fmt.println()
 }
 
+append_results_jsonl :: proc(results: []Bench_Result, path := "benchmarks/history.jsonl") {
+	b := strings.builder_make(0, 8192, context.temp_allocator)
+	now_ns := time.to_unix_nanoseconds(time.now())
+	fmt.sbprintf(&b, `{{"timestamp_unix_ns":%d,"os":"%v","arch":"%v","benchmarks":[`, now_ns, ODIN_OS, ODIN_ARCH)
+	for r, idx in results {
+		if idx > 0 {
+			strings.write_byte(&b, ',')
+		}
+		sec := f64(r.median_ns) / 1e9
+		items_per_sec := f64(r.rows) / sec
+		ns_per_item := f64(r.median_ns) / f64(max(r.rows, 1))
+		mb_per_sec := (items_per_sec * f64(r.bytes_row)) / (1024.0 * 1024.0)
+
+		escaped_name, _ := strings.replace_all(r.name, `"`, `\"`, context.temp_allocator)
+		fmt.sbprintf(
+			&b,
+			`{{"name":"%s","rows":%d,"iterations":%d,"median_ns":%d,"min_ns":%d,"max_ns":%d,"bytes_row":%d,"ops_per_sec":%.2f,"mb_per_sec":%.2f,"ns_per_item":%.2f}}`,
+			escaped_name,
+			r.rows,
+			r.iterations,
+			r.median_ns,
+			r.min_ns,
+			r.max_ns,
+			r.bytes_row,
+			items_per_sec,
+			mb_per_sec,
+			ns_per_item,
+		)
+	}
+	strings.write_string(&b, "]}\n")
+
+	existing, read_err := os.read_entire_file(path, context.temp_allocator)
+	out_b := strings.builder_make(0, len(existing) + strings.builder_len(b), context.temp_allocator)
+	if read_err == nil && len(existing) > 0 {
+		strings.write_bytes(&out_b, existing)
+	}
+	strings.write_string(&out_b, strings.to_string(b))
+	if os.write_entire_file(path, out_b.buf[:]) == nil {
+		fmt.printf("Appended benchmark run (%d benchmarks) to %s\n", len(results), path)
+	}
+}
+
 // ----------------------------------------------------------------------------
 // Shared Benchmark State
 // ----------------------------------------------------------------------------
@@ -2521,4 +2563,5 @@ main :: proc() {
 	append(&results, run_timed("8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops)", 10_000, 0, 5, bench_query_metrics_and_log_sink_10k))
 
 	print_results_table(results[:])
+	append_results_jsonl(results[:])
 }
