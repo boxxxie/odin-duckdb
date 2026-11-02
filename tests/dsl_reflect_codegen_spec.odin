@@ -673,3 +673,106 @@ Telemetry_Event :: struct {
 	expect_v2_ok(t, rc_order, &fx.err)
 	testing.expect_value(t, len(order_cols), 1)
 }
+
+// ----------------------------------------------------------------------------
+// 4. Memory Safety & Ownership Regression Specifications
+// ----------------------------------------------------------------------------
+
+Wide_Ignored_Struct :: struct {
+	c01:     i64 `duckdb:"c01"`,
+	skip_a:  int `duckdb:"-"`,
+	c02:     i64 `duckdb:"c02"`,
+	c03:     i64 `duckdb:"c03"`,
+	c04:     i64 `duckdb:"c04"`,
+	c05:     i64 `duckdb:"c05"`,
+	c06:     i64 `duckdb:"c06"`,
+	c07:     i64 `duckdb:"c07"`,
+	c08:     i64 `duckdb:"c08"`,
+	c09:     i64 `duckdb:"c09"`,
+	c10:     i64 `duckdb:"c10"`,
+	c11:     i64 `duckdb:"c11"`,
+	c12:     i64 `duckdb:"c12"`,
+	c13:     i64 `duckdb:"c13"`,
+	c14:     i64 `duckdb:"c14"`,
+	c15:     i64 `duckdb:"c15"`,
+	c16:     i64 `duckdb:"c16"`,
+	c17:     i64 `duckdb:"c17"`,
+	c18:     i64 `duckdb:"c18"`,
+	skip_b:  int `duckdb:"-"`,
+}
+
+@(private = "file")
+build_bound_query_in_helper_frame :: #force_no_inline proc(base_val: i64) -> duckdb.Query {
+	local_min := base_val + 15
+	local_max := base_val + 95
+	q := duckdb.query_from("wide_tbl")
+	duckdb.query_select(&q, "*")
+	duckdb.query_where_bind(&q, "c01 >= $1 AND c18 <= $2", local_min, local_max)
+	return q
+}
+
+@(private = "file")
+clobber_stack_frame :: #force_no_inline proc(seed: i64) -> i64 {
+	noise: [64]i64
+	for i := 0; i < len(noise); i += 1 {
+		noise[i] = seed * i64(i + 999999)
+	}
+	return noise[63]
+}
+
+@(test)
+spec_memory_safety_wide_struct_dealloc_stack_query_bind_and_value_ownership :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	// 1. >16-column struct with ignored `duckdb:"-"` fields allocated via `context.allocator` (tracked by test runner):
+	ddl := duckdb.create_table_sql(Wide_Ignored_Struct, "wide_tbl", true, context.temp_allocator)
+	sqllogic_statement_ok(&fx, ddl)
+
+	app: duckdb.Struct_Appender(Wide_Ignored_Struct)
+	expect_v2_ok(t, duckdb.struct_appender_create(fx.conn, Wide_Ignored_Struct, "wide_tbl", &app, context.allocator, &fx.err), &fx.err)
+	defer duckdb.struct_appender_destroy(&app)
+
+	row_in := [1]Wide_Ignored_Struct{{
+		c01 = 20, c02 = 2, c03 = 3, c04 = 4, c05 = 5, c06 = 6, c07 = 7, c08 = 8, c09 = 9,
+		c10 = 10, c11 = 11, c12 = 12, c13 = 13, c14 = 14, c15 = 15, c16 = 16, c17 = 17, c18 = 90,
+		skip_a = -1, skip_b = -2,
+	}}
+	expect_v2_ok(t, duckdb.struct_appender_append(&app, row_in[:], &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.struct_appender_flush(&app, &fx.err), &fx.err)
+
+	pq: duckdb.Prepared_Query(Wide_Ignored_Struct)
+	expect_v2_ok(
+		t,
+		duckdb.prepared_query_create(fx.conn, Wide_Ignored_Struct, "SELECT * FROM wide_tbl WHERE c01 = $1", &pq, false, context.allocator, &fx.err),
+		&fx.err,
+	)
+	defer duckdb.prepared_query_destroy(&pq)
+
+	// 2. Passing an existing `V2_Value_Handle` to `v2_query` and `prepared_query_execute_as` preserves caller ownership:
+	caller_val: duckdb.V2_Value_Handle
+	expect_v2_ok(t, duckdb.duckdb_v2_value_create_bigint(fx.factory, 20, &caller_val, &fx.err), &fx.err)
+	defer duckdb.duckdb_v2_value_destroy(&caller_val)
+
+	pq_rows, pq_rc := duckdb.prepared_query_execute_as(&pq, context.temp_allocator, &fx.err, caller_val)
+	expect_v2_ok(t, pq_rc, &fx.err)
+	testing.expect_value(t, len(pq_rows), 1)
+
+	raw_res: duckdb.V2_Result_Handle
+	expect_v2_ok(t, duckdb.v2_query(fx.conn, "SELECT c18 FROM wide_tbl WHERE c01 = $1", &raw_res, &fx.err, caller_val), &fx.err)
+	duckdb.duckdb_v2_result_destroy(&raw_res)
+
+	still_valid: i64
+	expect_v2_ok(t, duckdb.duckdb_v2_value_get_bigint(caller_val, &still_valid, &fx.err), &fx.err)
+	testing.expect_value(t, still_valid, i64(20))
+
+	// 3. `Query` returned across stack frames retains value-boxed `Query_Param` bindings after stack clobbering:
+	returned_q := build_bound_query_in_helper_frame(5)
+	_ = clobber_stack_frame(1234567)
+	bound_rows, bound_rc := duckdb.query_execute_as(fx.conn, Wide_Ignored_Struct, returned_q, context.temp_allocator, &fx.err)
+	expect_v2_ok(t, bound_rc, &fx.err)
+	testing.expect_value(t, len(bound_rows), 1)
+	if len(bound_rows) == 1 {
+		testing.expect_value(t, bound_rows[0].c01, i64(20))
+		testing.expect_value(t, bound_rows[0].c18, i64(90))
+	}
+}

@@ -120,15 +120,18 @@ Arrow_Converter_Probe :: struct {
 }
 
 @(private = "file")
-g_arrow_probe: Arrow_Converter_Probe
-
-@(private = "file")
 arrow_probe_exec_cb :: proc "c" (
 	info: duckdb.V2_Scalar_Function_Exec_Info_Handle,
 	ctx: duckdb.V2_Context_Handle,
 	err: ^duckdb.V2_Error_Info_Handle,
 ) {
 	context = runtime.default_context()
+
+	ud: rawptr
+	if duckdb.duckdb_v2_scalar_function_exec_get_user_data(info, &ud, err) != .NONE || ud == nil {
+		return
+	}
+	probe := cast(^Arrow_Converter_Probe)ud
 
 	factory: duckdb.V2_Factory_Handle
 	if duckdb.duckdb_v2_context_get_factory(ctx, &factory, err) != .NONE {
@@ -168,17 +171,17 @@ arrow_probe_exec_cb :: proc "c" (
 	}
 	defer duckdb.duckdb_v2_schema_destroy(&resolved)
 
-	_ = duckdb.duckdb_v2_schema_get_count(resolved, &g_arrow_probe.field_count, err)
-	if g_arrow_probe.field_count > 0 {
+	_ = duckdb.duckdb_v2_schema_get_count(resolved, &probe.field_count, err)
+	if probe.field_count > 0 {
 		fname: duckdb.V2_Identifier
 		ftype: duckdb.V2_Logical_Type_Handle // Borrowed from `resolved` schema (`duckdb_v2.h` line 4720); do NOT destroy.
 		if duckdb.duckdb_v2_schema_get_field(resolved, 0, &fname, &ftype, err) == .NONE {
 			if duckdb.v2_str_to_string(fname) == "a" {
-				g_arrow_probe.first_name = "a"
+				probe.first_name = "a"
 			}
 			tid: duckdb.V2_Logical_Type_Id
 			if duckdb.duckdb_v2_logical_type_get_id(ftype, &tid, err) == .NONE && tid == .BIGINT {
-				g_arrow_probe.first_type = "BIGINT"
+				probe.first_type = "BIGINT"
 			}
 		}
 	}
@@ -198,7 +201,7 @@ arrow_probe_exec_cb :: proc "c" (
 		if duckdb.duckdb_v2_arrow_exporter_next_array(exporter, &arr, err) != .NONE || arr.release == nil {
 			break
 		}
-		g_arrow_probe.arrays_seen += 1
+		probe.arrays_seen += 1
 		if duckdb.duckdb_v2_arrow_importer_append(importer, &arr, true, true, err) != .NONE {
 			duckdb.arrow_array_release(&arr)
 			break
@@ -209,7 +212,7 @@ arrow_probe_exec_cb :: proc "c" (
 			_ = duckdb.duckdb_v2_data_chunk_get_vector(imported, 0, &vec, err)
 			view: duckdb.V2_Vector_View
 			_ = duckdb.duckdb_v2_vector_get_view(vec, &view, err)
-			g_arrow_probe.imported_val = (cast([^]i64)view.data)[0]
+			probe.imported_val = (cast([^]i64)view.data)[0]
 			duckdb.duckdb_v2_data_chunk_destroy(&imported)
 		}
 	}
@@ -229,7 +232,7 @@ arrow_probe_exec_cb :: proc "c" (
 @(test)
 spec_v2_arrow_exporter_and_importer_roundtrip :: proc(t: ^testing.T) {
 	fx := dsl_with_memory_db(t)
-	g_arrow_probe = {}
+	probe: Arrow_Converter_Probe
 
 	fn: duckdb.V2_Scalar_Function_Handle
 	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_create(fx.factory, &fn, &fx.err), &fx.err)
@@ -237,6 +240,8 @@ spec_v2_arrow_exporter_and_importer_roundtrip :: proc(t: ^testing.T) {
 
 	fn_name := duckdb.v2_str_from_string("odin_arrow_probe")
 	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_name(fn, &fn_name, &fx.err), &fx.err)
+	user_opaque := duckdb.V2_Opaque{ptr = &probe}
+	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_user_data(fn, &user_opaque, &fx.err), &fx.err)
 	expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_exec_callback(fn, arrow_probe_exec_cb, &fx.err), &fx.err)
 
 	sig: duckdb.V2_Function_Signature_Handle
@@ -251,9 +256,9 @@ spec_v2_arrow_exporter_and_importer_roundtrip :: proc(t: ^testing.T) {
 	expect_v2_ok(t, duckdb.duckdb_v2_connection_register_scalar_function(fx.conn, fn, &fx.err), &fx.err)
 
 	expect_v2_ok(t, driver_exec_drain(fx.conn, "SELECT odin_arrow_probe(1)", nil, &fx.err), &fx.err)
-	testing.expect_value(t, g_arrow_probe.field_count, duckdb.V2_Idx(1))
-	testing.expect_value(t, g_arrow_probe.first_name, "a")
-	testing.expect_value(t, g_arrow_probe.first_type, "BIGINT")
-	testing.expect_value(t, g_arrow_probe.arrays_seen, i64(1))
-	testing.expect_value(t, g_arrow_probe.imported_val, i64(4242))
+	testing.expect_value(t, probe.field_count, duckdb.V2_Idx(1))
+	testing.expect_value(t, probe.first_name, "a")
+	testing.expect_value(t, probe.first_type, "BIGINT")
+	testing.expect_value(t, probe.arrays_seen, i64(1))
+	testing.expect_value(t, probe.imported_val, i64(4242))
 }
