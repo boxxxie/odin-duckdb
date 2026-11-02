@@ -12,21 +12,157 @@ package duckdb_benchmarks
 // ============================================================================
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:thread"
 import "core:time"
 import duckdb "../duckdb"
 
+MAX_RUNS :: 256
+
 Bench_Result :: struct {
-	name:       string,
-	rows:       int,
-	iterations: int,
-	median_ns:  i64,
-	min_ns:     i64,
-	max_ns:     i64,
-	bytes_row:  int,
+	rank:         int,
+	name:         string,
+	ops:          int,
+	runs:         int,
+	warmup:       int,
+	bytes_row:    int,
+	bytes_used:   i64,
+	total_ms:     f64,
+	ns_per_op:    f64,
+	median_ns:    f64,
+	mean_ns:      f64,
+	stddev_ns:    f64,
+	variance_ns2: f64,
+	cv_pct:       f64,
+	min_ns:       f64,
+	max_ns:       f64,
+	iqr_ns:       f64,
+	p95_ns:       f64,
+	p99_ns:       f64,
+	ops_per_sec:  f64,
+	mb_per_sec:   f64,
+	samples_ns:   [MAX_RUNS]f64,
+	samples_ms:   [MAX_RUNS]f64,
+}
+
+g_jsonl_file:     ^os.File
+g_history_file:   ^os.File
+g_bench_rank:     int
+g_runs:           int = 0 // 0 = use per-benchmark default unless overridden by --runs
+g_warmup:         int = 1
+g_commit_sha:     string = "unknown"
+g_run_id:         string = "run-0"
+g_append_primary: bool = false
+g_save_history:   bool = true
+g_jsonl_path:     string = "benchmarks/odin.jsonl"
+g_history_path:   string = "benchmarks/history.jsonl"
+
+resolve_git_commit :: proc(allocator := context.allocator) -> string {
+	head_bytes, err := os.read_entire_file(".git/HEAD", allocator)
+	if err != nil {
+		return "unknown"
+	}
+	head_str := strings.trim_space(string(head_bytes))
+	if strings.has_prefix(head_str, "ref: ") {
+		ref_rel := strings.trim_space(head_str[5:])
+		ref_path := fmt.aprintf(".git/%s", ref_rel, allocator = allocator)
+		if ref_bytes, r_err := os.read_entire_file(ref_path, allocator); r_err == nil {
+			sha := strings.trim_space(string(ref_bytes))
+			if len(sha) > 12 {
+				return sha[:12]
+			}
+			return sha
+		}
+		if packed_bytes, p_err := os.read_entire_file(".git/packed-refs", allocator); p_err == nil {
+			lines := strings.split_lines(string(packed_bytes), allocator)
+			suffix := fmt.aprintf(" %s", ref_rel, allocator = allocator)
+			for line in lines {
+				trimmed := strings.trim_space(line)
+				if len(trimmed) == 0 || strings.has_prefix(trimmed, "#") || strings.has_prefix(trimmed, "^") {
+					continue
+				}
+				if strings.has_suffix(trimmed, suffix) && len(trimmed) >= 12 {
+					return trimmed[:12]
+				}
+			}
+		}
+		return "unknown"
+	}
+	if len(head_str) > 12 {
+		return head_str[:12]
+	}
+	return head_str
+}
+
+parse_cli_args :: proc() {
+	g_commit_sha = resolve_git_commit()
+	unix_sec := i64(time.to_unix_nanoseconds(time.now())) / 1_000_000_000
+	g_run_id = fmt.aprintf("run-%d", unix_sec)
+
+	args := os.args[1:]
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if arg == "--append" || arg == "-append" {
+			g_append_primary = true
+		} else if arg == "--no-history" || arg == "-no-history" {
+			g_save_history = false
+		} else if (arg == "--runs" || arg == "-runs") && i + 1 < len(args) {
+			if v, ok := strconv.parse_int(args[i + 1]); ok && v > 0 {
+				g_runs = clamp(v, 1, MAX_RUNS)
+			}
+			i += 1
+		} else if strings.has_prefix(arg, "--runs=") || strings.has_prefix(arg, "-runs:") {
+			eq := strings.index_any(arg, "=:")
+			if v, ok := strconv.parse_int(arg[eq + 1:]); ok && v > 0 {
+				g_runs = clamp(v, 1, MAX_RUNS)
+			}
+		} else if (arg == "--warmup" || arg == "-warmup") && i + 1 < len(args) {
+			if v, ok := strconv.parse_int(args[i + 1]); ok && v >= 0 {
+				g_warmup = v
+			}
+			i += 1
+		} else if strings.has_prefix(arg, "--warmup=") || strings.has_prefix(arg, "-warmup:") {
+			eq := strings.index_any(arg, "=:")
+			if v, ok := strconv.parse_int(arg[eq + 1:]); ok && v >= 0 {
+				g_warmup = v
+			}
+		} else if (arg == "--commit" || arg == "-commit") && i + 1 < len(args) {
+			g_commit_sha = args[i + 1]
+			i += 1
+		} else if strings.has_prefix(arg, "--commit=") || strings.has_prefix(arg, "-commit:") {
+			eq := strings.index_any(arg, "=:")
+			g_commit_sha = arg[eq + 1:]
+		} else if (arg == "--run-id" || arg == "-run-id") && i + 1 < len(args) {
+			g_run_id = args[i + 1]
+			i += 1
+		} else if strings.has_prefix(arg, "--run-id=") || strings.has_prefix(arg, "-run-id:") {
+			eq := strings.index_any(arg, "=:")
+			g_run_id = arg[eq + 1:]
+		} else if (arg == "--output" || arg == "-output") && i + 1 < len(args) {
+			g_jsonl_path = args[i + 1]
+			i += 1
+		} else if (arg == "--history" || arg == "-history") && i + 1 < len(args) {
+			g_history_path = args[i + 1]
+			i += 1
+		}
+		i += 1
+	}
+}
+
+calc_percentile :: proc(sorted: []f64, p: f64) -> f64 {
+	n := len(sorted)
+	if n == 0 do return 0.0
+	if n == 1 do return sorted[0]
+	pos := p * f64(n - 1)
+	lo := int(pos)
+	hi := min(lo + 1, n - 1)
+	frac := pos - f64(lo)
+	return sorted[lo] + frac * (sorted[hi] - sorted[lo])
 }
 
 Telemetry_Row :: struct {
@@ -56,107 +192,206 @@ Json_Row :: struct {
 	meta: Sensor_Meta `duckdb:"meta,json"`,
 }
 
+print_header :: proc() {
+	fmt.println("=========================================================================================================================================================================")
+	fmt.printf(
+		"  odin-duckdb Statistical Benchmark Suite | Commit: %s | Warmup: %d | Run ID: %s\n",
+		g_commit_sha,
+		g_warmup,
+		g_run_id,
+	)
+	fmt.println("=========================================================================================================================================================================")
+	fmt.printf(
+		"%-56s | %8s | %9s | %10s | %17s | %6s | %8s | %9s | %15s | %11s\n",
+		"Benchmark",
+		"Ops",
+		"Med (ms)",
+		"Med (ns)",
+		"Mean ± StdDev",
+		"CV%",
+		"IQR ns",
+		"p95 ns",
+		"Min..Max ns",
+		"ops/sec",
+	)
+	fmt.println("-------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+}
+
 run_timed :: proc(
 	name: string,
 	rows: int,
 	bytes_per_row: int,
-	iterations: int,
+	default_iterations: int,
 	fn: proc(),
 ) -> Bench_Result {
-	// Warmup iteration
-	fn()
-	free_all(context.temp_allocator)
+	g_bench_rank += 1
+	n := g_runs if g_runs > 0 else clamp(default_iterations, 1, MAX_RUNS)
 
-	samples := make([]i64, iterations)
-	defer delete(samples)
+	for _ in 0 ..< g_warmup {
+		fn()
+		free_all(context.temp_allocator)
+	}
 
-	for i := 0; i < iterations; i += 1 {
+	res := Bench_Result{
+		rank       = g_bench_rank,
+		name       = name,
+		ops        = rows,
+		runs       = n,
+		warmup     = g_warmup,
+		bytes_row  = bytes_per_row,
+		bytes_used = i64(rows) * i64(bytes_per_row),
+	}
+
+	sorted_ns: [MAX_RUNS]f64
+	sorted_ms: [MAX_RUNS]f64
+
+	for i := 0; i < n; i += 1 {
 		sw: time.Stopwatch
 		time.stopwatch_start(&sw)
 		fn()
 		time.stopwatch_stop(&sw)
-		samples[i] = time.duration_nanoseconds(time.stopwatch_duration(sw))
+		dur_ns := f64(max(time.duration_nanoseconds(time.stopwatch_duration(sw)), 1))
+		ms := dur_ns / 1e6
+		ns_item := dur_ns / f64(max(rows, 1))
+		res.samples_ms[i] = ms
+		res.samples_ns[i] = ns_item
+		sorted_ms[i] = ms
+		sorted_ns[i] = ns_item
 		free_all(context.temp_allocator)
 	}
 
-	slice.sort(samples)
-	return Bench_Result{
-		name       = name,
-		rows       = rows,
-		iterations = iterations,
-		median_ns  = samples[iterations / 2],
-		min_ns     = samples[0],
-		max_ns     = samples[iterations - 1],
-		bytes_row  = bytes_per_row,
+	slice.sort(sorted_ns[:n])
+	slice.sort(sorted_ms[:n])
+
+	res.min_ns = sorted_ns[0]
+	res.max_ns = sorted_ns[n - 1]
+	res.median_ns = calc_percentile(sorted_ns[:n], 0.50)
+	res.ns_per_op = res.median_ns
+	res.total_ms = calc_percentile(sorted_ms[:n], 0.50)
+	q1_ns := calc_percentile(sorted_ns[:n], 0.25)
+	q3_ns := calc_percentile(sorted_ns[:n], 0.75)
+	res.iqr_ns = q3_ns - q1_ns
+	res.p95_ns = calc_percentile(sorted_ns[:n], 0.95)
+	res.p99_ns = calc_percentile(sorted_ns[:n], 0.99)
+
+	sum_ns := 0.0
+	for i in 0 ..< n {
+		sum_ns += sorted_ns[i]
 	}
+	res.mean_ns = sum_ns / f64(n)
+
+	var_sum := 0.0
+	for i in 0 ..< n {
+		d := sorted_ns[i] - res.mean_ns
+		var_sum += d * d
+	}
+	res.variance_ns2 = var_sum / f64(max(n - 1, 1)) if n > 1 else 0.0
+	res.stddev_ns = math.sqrt(res.variance_ns2)
+	res.cv_pct = (res.stddev_ns / max(res.mean_ns, 1e-9)) * 100.0
+	res.ops_per_sec = (f64(rows) * 1e9) / max(res.median_ns * f64(max(rows, 1)), 1.0)
+	res.mb_per_sec = (res.ops_per_sec * f64(bytes_per_row)) / (1024.0 * 1024.0)
+
+	print_and_log_result(&res)
+	return res
 }
 
-print_results_table :: proc(results: []Bench_Result) {
-	fmt.println()
-	fmt.println("| Benchmark | Items / Op | Median Time | Min Time | Throughput (ops/s) | Bandwidth (MB/s) | Latency (ns/item) |")
-	fmt.println("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
-	for r in results {
-		median_ms := f64(r.median_ns) / 1e6
-		min_ms := f64(r.min_ns) / 1e6
-		sec := f64(r.median_ns) / 1e9
-		items_per_sec := f64(r.rows) / sec
-		ns_per_item := f64(r.median_ns) / f64(max(r.rows, 1))
-		mb_per_sec := (items_per_sec * f64(r.bytes_row)) / (1024.0 * 1024.0)
+print_and_log_result :: proc(r: ^Bench_Result) {
+	mean_sd_str := fmt.tprintf("%.1f ± %.1f", r.mean_ns, r.stddev_ns)
+	cv_str := fmt.tprintf("%.1f%%", r.cv_pct)
+	iqr_str := fmt.tprintf("%.1f", r.iqr_ns)
+	p95_str := fmt.tprintf("%.1f", r.p95_ns)
+	minmax_str := fmt.tprintf("%.1f..%.1f", r.min_ns, r.max_ns)
 
-		bw_str := "-"
-		if r.bytes_row > 0 {
-			bw_str = fmt.tprintf("%.1f MB/s", mb_per_sec)
-		}
+	short_name := r.name
+	if len(short_name) > 56 {
+		short_name = short_name[:56]
+	}
 
-		tp_str: string
-		if items_per_sec >= 1e6 {
-			tp_str = fmt.tprintf("%.2f M/s", items_per_sec / 1e6)
-		} else {
-			tp_str = fmt.tprintf("%.2f K/s", items_per_sec / 1e3)
-		}
+	tp_str: string
+	if r.ops_per_sec >= 1e6 {
+		tp_str = fmt.tprintf("%.2f M/s", r.ops_per_sec / 1e6)
+	} else {
+		tp_str = fmt.tprintf("%.2f K/s", r.ops_per_sec / 1e3)
+	}
 
+	if r.bytes_row > 0 {
 		fmt.printf(
-			"| %s | %d | %.3f ms | %.3f ms | %s | %s | %.1f ns |\n",
-			r.name,
-			r.rows,
-			median_ms,
-			min_ms,
+			"%-56s | % 8d | % 9.3f | % 10.1f | %17s | %6s | %8s | %9s | %15s | %11s (%.1f MB/s)\n",
+			short_name,
+			r.ops,
+			r.total_ms,
+			r.median_ns,
+			mean_sd_str,
+			cv_str,
+			iqr_str,
+			p95_str,
+			minmax_str,
 			tp_str,
-			bw_str,
-			ns_per_item,
+			r.mb_per_sec,
+		)
+	} else {
+		fmt.printf(
+			"%-56s | % 8d | % 9.3f | % 10.1f | %17s | %6s | %8s | %9s | %15s | %11s\n",
+			short_name,
+			r.ops,
+			r.total_ms,
+			r.median_ns,
+			mean_sd_str,
+			cv_str,
+			iqr_str,
+			p95_str,
+			minmax_str,
+			tp_str,
 		)
 	}
-	fmt.println()
-}
 
-write_results_jsonl :: proc(results: []Bench_Result, path := "benchmarks/history.jsonl") {
-	b := strings.builder_make(0, 8192, context.temp_allocator)
-	for r, idx in results {
-		sec := f64(r.median_ns) / 1e9
-		items_per_sec := f64(r.rows) / sec
-		ns_per_item := f64(r.median_ns) / f64(max(r.rows, 1))
-		mb_per_sec := (items_per_sec * f64(r.bytes_row)) / (1024.0 * 1024.0)
-
+	if g_jsonl_file != nil || g_history_file != nil {
+		sb := strings.builder_make(context.temp_allocator)
+		strings.write_byte(&sb, '[')
+		for i in 0 ..< r.runs {
+			if i > 0 do strings.write_byte(&sb, ',')
+			fmt.sbprintf(&sb, "%.2f", r.samples_ns[i])
+		}
+		strings.write_byte(&sb, ']')
+		samples_json := strings.to_string(sb)
 		escaped_name, _ := strings.replace_all(r.name, `"`, `\"`, context.temp_allocator)
-		fmt.sbprintf(
-			&b,
-			`{{"rank":%d,"name":"%s","rows":%d,"iterations":%d,"median_ns":%d,"min_ns":%d,"max_ns":%d,"bytes_row":%d,"ops_per_sec":%.2f,"mb_per_sec":%.2f,"ns_per_item":%.2f}}` + "\n",
-			idx + 1,
+
+		line := fmt.tprintf(
+			"{{\"rank\":%d,\"lang\":\"odin\",\"commit\":\"%s\",\"run_id\":\"%s\",\"name\":\"%s\",\"ops\":%d,\"rows\":%d,\"runs\":%d,\"iterations\":%d,\"warmup\":%d,\"total_ms\":%.3f,\"ns_per_op\":%.2f,\"ns_per_item\":%.2f,\"mean_ns\":%.2f,\"median_ns\":%.2f,\"stddev_ns\":%.2f,\"variance_ns2\":%.2f,\"cv_pct\":%.2f,\"min_ns\":%.2f,\"max_ns\":%.2f,\"iqr_ns\":%.2f,\"p95_ns\":%.2f,\"p99_ns\":%.2f,\"ops_per_sec\":%.2f,\"mb_per_sec\":%.2f,\"bytes_row\":%d,\"bytes_used\":%d,\"samples_ns\":%s}}\n",
+			r.rank,
+			g_commit_sha,
+			g_run_id,
 			escaped_name,
-			r.rows,
-			r.iterations,
+			r.ops,
+			r.ops,
+			r.runs,
+			r.runs,
+			r.warmup,
+			r.total_ms,
+			r.ns_per_op,
+			r.ns_per_op,
+			r.mean_ns,
 			r.median_ns,
+			r.stddev_ns,
+			r.variance_ns2,
+			r.cv_pct,
 			r.min_ns,
 			r.max_ns,
+			r.iqr_ns,
+			r.p95_ns,
+			r.p99_ns,
+			r.ops_per_sec,
+			r.mb_per_sec,
 			r.bytes_row,
-			items_per_sec,
-			mb_per_sec,
-			ns_per_item,
+			r.bytes_used,
+			samples_json,
 		)
-	}
-
-	if os.write_entire_file(path, b.buf[:]) == nil {
-		fmt.printf("Wrote %d benchmark records to %s\n", len(results), path)
+		if g_jsonl_file != nil {
+			_, _ = os.write_string(g_jsonl_file, line)
+		}
+		if g_history_file != nil {
+			_, _ = os.write_string(g_history_file, line)
+		}
 	}
 }
 
@@ -2104,9 +2339,26 @@ bench_struct_appender_microbatches_100k :: proc() {
 }
 
 main :: proc() {
-	fmt.println("================================================================================")
-	fmt.println(" odin-duckdb Benchmark Suite (DuckDB 2.0 C API v2 + Reflection + DSL + Arrow)")
-	fmt.println("================================================================================")
+	parse_cli_args()
+
+	primary_flags := os.File_Flags{.Write, .Create, .Append} if g_append_primary else os.File_Flags{.Write, .Create, .Trunc}
+	if f, err := os.open(g_jsonl_path, primary_flags, os.Permissions_Read_Write_All); err == nil {
+		g_jsonl_file = f
+	}
+	defer if g_jsonl_file != nil {
+		os.close(g_jsonl_file)
+	}
+
+	if g_save_history && g_history_path != g_jsonl_path {
+		if hf, err := os.open(g_history_path, {.Write, .Create, .Append}, os.Permissions_Read_Write_All); err == nil {
+			g_history_file = hf
+		}
+	}
+	defer if g_history_file != nil {
+		os.close(g_history_file)
+	}
+
+	print_header()
 
 	rc: duckdb.V2_Error
 	g_db, rc = duckdb.v2_open("")
@@ -2551,6 +2803,5 @@ main :: proc() {
 	append(&results, run_timed("8a. VFS: Positional `write_at` + `read_at` (1K x 64 KB = 64 MB)", 1_000, 65536, 5, bench_vfs_positional_io_1k))
 	append(&results, run_timed("8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops)", 10_000, 0, 5, bench_query_metrics_and_log_sink_10k))
 
-	print_results_table(results[:])
-	write_results_jsonl(results[:])
+	fmt.println("=========================================================================================================================================================================")
 }
