@@ -72,27 +72,30 @@ V2_Arrow_Importer_Handle                           :: distinct rawptr
 V2_Arrow_Exporter_Handle                           :: distinct rawptr
 V2_Arrow_Result_Handle                             :: distinct rawptr
 
-// Functions Common, Signatures & Docs Handles (`duckdb_v2.h` lines 3380-3840)
+// Functions Common, Signatures, Docs & Optimizer Statistics Handles (`duckdb_v2.h` lines 3380-3840, 4766)
 V2_Function_Bind_Info_Handle     :: distinct rawptr
 V2_Function_Docs_Handle          :: distinct rawptr
 V2_Function_Signature_Handle     :: distinct rawptr
+V2_Stats_Handle                  :: distinct rawptr
 
-// Scalar Function Handles (`duckdb_v2.h` lines 10330-10370)
+// Scalar Function Handles (`duckdb_v2.h` lines 10330-10628)
 V2_Scalar_Function_Handle                    :: distinct rawptr
 V2_Scalar_Function_Resolve_Types_Info_Handle :: distinct rawptr
 V2_Scalar_Function_Bind_Info_Handle          :: distinct rawptr
 V2_Scalar_Function_Init_Info_Handle          :: distinct rawptr
 V2_Scalar_Function_Exec_Info_Handle          :: distinct rawptr
+V2_Scalar_Function_Stats_Info_Handle         :: distinct rawptr
 
-// Table Function Handles (`duckdb_v2.h` lines 12427-12535)
+// Table Function Handles (`duckdb_v2.h` lines 12427-12897)
 V2_Table_Function_Handle                   :: distinct rawptr
 V2_Table_Function_Bind_Info_Handle         :: distinct rawptr
 V2_Table_Function_Init_Global_Info_Handle  :: distinct rawptr
 V2_Table_Function_Init_Local_Info_Handle   :: distinct rawptr
 V2_Table_Function_Exec_Info_Handle         :: distinct rawptr
 V2_Table_Function_Progress_Info_Handle     :: distinct rawptr
+V2_Table_Function_Stats_Info_Handle        :: distinct rawptr
 
-// Aggregate Function Handles (`duckdb_v2.h` lines 4907-4970)
+// Aggregate Function Handles (`duckdb_v2.h` lines 4907-5038)
 V2_Aggregate_Function_Handle               :: distinct rawptr
 V2_Aggregate_Function_Bind_Info_Handle     :: distinct rawptr
 V2_Aggregate_Function_Size_Info_Handle     :: distinct rawptr
@@ -101,6 +104,7 @@ V2_Aggregate_Function_Update_Info_Handle   :: distinct rawptr
 V2_Aggregate_Function_Combine_Info_Handle  :: distinct rawptr
 V2_Aggregate_Function_Finalize_Info_Handle :: distinct rawptr
 V2_Aggregate_Function_Destroy_Info_Handle  :: distinct rawptr
+V2_Aggregate_Function_Stats_Info_Handle    :: distinct rawptr
 
 // Qualified Name, Replacement Scan, Custom Type & Cast Function Handles (`duckdb_v2.h` lines 839-876, 2069-2071, 4220-4222, 9917-9928)
 V2_Qname_Handle                   :: distinct rawptr
@@ -279,12 +283,14 @@ V2_Scalar_Function_Resolve_Types_Callback_Fn :: #type proc "c" (info: V2_Functio
 V2_Scalar_Function_Bind_Callback_Fn          :: #type proc "c" (info: V2_Function_Bind_Info_Handle, result: V2_Scalar_Function_Bind_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Scalar_Function_Init_Callback_Fn          :: #type proc "c" (info: V2_Scalar_Function_Init_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Scalar_Function_Exec_Callback_Fn          :: #type proc "c" (info: V2_Scalar_Function_Exec_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
+V2_Scalar_Function_Stats_Callback_Fn         :: #type proc "c" (info: V2_Scalar_Function_Stats_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 
 V2_Table_Function_Bind_Callback_Fn           :: #type proc "c" (info: V2_Function_Bind_Info_Handle, result: V2_Table_Function_Bind_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Table_Function_Init_Global_Callback_Fn    :: #type proc "c" (info: V2_Table_Function_Init_Global_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Table_Function_Init_Local_Callback_Fn     :: #type proc "c" (info: V2_Table_Function_Init_Local_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Table_Function_Exec_Callback_Fn           :: #type proc "c" (info: V2_Table_Function_Exec_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Table_Function_Progress_Callback_Fn       :: #type proc "c" (info: V2_Table_Function_Progress_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
+V2_Table_Function_Stats_Callback_Fn          :: #type proc "c" (info: V2_Table_Function_Stats_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 
 V2_Aggregate_Function_Bind_Callback_Fn       :: #type proc "c" (info: V2_Function_Bind_Info_Handle, result: V2_Aggregate_Function_Bind_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Aggregate_Function_Size_Callback_Fn       :: #type proc "c" (info: V2_Aggregate_Function_Size_Info_Handle, err: ^V2_Error_Info_Handle)
@@ -293,6 +299,7 @@ V2_Aggregate_Function_Update_Callback_Fn     :: #type proc "c" (info: V2_Aggrega
 V2_Aggregate_Function_Combine_Callback_Fn    :: #type proc "c" (info: V2_Aggregate_Function_Combine_Info_Handle, err: ^V2_Error_Info_Handle)
 V2_Aggregate_Function_Finalize_Callback_Fn   :: #type proc "c" (info: V2_Aggregate_Function_Finalize_Info_Handle, err: ^V2_Error_Info_Handle)
 V2_Aggregate_Function_Destroy_Callback_Fn    :: #type proc "c" (info: V2_Aggregate_Function_Destroy_Info_Handle, err: ^V2_Error_Info_Handle)
+V2_Aggregate_Function_Stats_Callback_Fn      :: #type proc "c" (info: V2_Aggregate_Function_Stats_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 
 V2_Replacement_Scan_Callback_Fn              :: #type proc "c" (info: V2_Replacement_Scan_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
 V2_Cast_Function_Exec_Callback_Fn            :: #type proc "c" (info: V2_Cast_Function_Exec_Info_Handle, ctx: V2_Context_Handle, err: ^V2_Error_Info_Handle)
@@ -886,7 +893,13 @@ foreign libduckdb {
 	duckdb_v2_function_signature_set_return_type  :: proc(sig: V2_Function_Signature_Handle, type: V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_identifier_render_quoted            :: proc(name: ^V2_Identifier, out_text: [^]u8, out_capacity: V2_Idx, out_length: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
 
-	// Scalar Function (`duckdb_v2.h` lines 10414-10925)
+	// Optimizer Statistics (`duckdb_v2.h` lines 4766-4853)
+	duckdb_v2_stats_can_have_null      :: proc(stats: V2_Stats_Handle, out: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_stats_can_have_valid     :: proc(stats: V2_Stats_Handle, out: ^bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_stats_set_can_have_null  :: proc(stats: V2_Stats_Handle, value: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_stats_set_can_have_valid :: proc(stats: V2_Stats_Handle, value: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
+
+	// Scalar Function (`duckdb_v2.h` lines 10414-11250)
 	duckdb_v2_scalar_function_create                       :: proc(factory: V2_Factory_Handle, fn: ^V2_Scalar_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_set_name                     :: proc(fn: V2_Scalar_Function_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_get_docs                     :: proc(fn: V2_Scalar_Function_Handle, docs: ^V2_Function_Docs_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -897,6 +910,7 @@ foreign libduckdb {
 	duckdb_v2_scalar_function_set_bind_callback            :: proc(fn: V2_Scalar_Function_Handle, callback: V2_Scalar_Function_Bind_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_set_init_callback            :: proc(fn: V2_Scalar_Function_Handle, callback: V2_Scalar_Function_Init_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_set_exec_callback            :: proc(fn: V2_Scalar_Function_Handle, callback: V2_Scalar_Function_Exec_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_set_stats_callback           :: proc(fn: V2_Scalar_Function_Handle, callback: V2_Scalar_Function_Stats_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_resolve_types_set_return_type :: proc(info: V2_Scalar_Function_Resolve_Types_Info_Handle, return_type: V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_bind_set_bind_data           :: proc(info: V2_Scalar_Function_Bind_Info_Handle, data: ^V2_Opaque, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_init_get_user_data           :: proc(info: V2_Scalar_Function_Init_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -909,10 +923,15 @@ foreign libduckdb {
 	duckdb_v2_scalar_function_exec_get_arg_count           :: proc(info: V2_Scalar_Function_Exec_Info_Handle, positional_fixed: ^V2_Idx, positional_variadic: ^V2_Idx, named_fixed: ^V2_Idx, named_variadic: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_exec_get_arg                 :: proc(info: V2_Scalar_Function_Exec_Info_Handle, index: V2_Idx, vector: ^V2_Vector_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_exec_get_result              :: proc(info: V2_Scalar_Function_Exec_Info_Handle, vector: ^V2_Vector_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_stats_get_user_data          :: proc(info: V2_Scalar_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_stats_get_bind_data          :: proc(info: V2_Scalar_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_stats_get_arg_count          :: proc(info: V2_Scalar_Function_Stats_Info_Handle, positional_fixed: ^V2_Idx, positional_variadic: ^V2_Idx, named_fixed: ^V2_Idx, named_variadic: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_stats_get_arg_stats          :: proc(info: V2_Scalar_Function_Stats_Info_Handle, index: V2_Idx, stats: ^V2_Stats_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_scalar_function_stats_get_result_stats       :: proc(info: V2_Scalar_Function_Stats_Info_Handle, stats: ^V2_Stats_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_connection_register_scalar_function          :: proc(conn: V2_Connection_Handle, fn: V2_Scalar_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_scalar_function_destroy                      :: proc(fn: ^V2_Scalar_Function_Handle) -> V2_Error ---
 
-	// Table Function (`duckdb_v2.h` lines 12604-13360)
+	// Table Function (`duckdb_v2.h` lines 12604-14390)
 	duckdb_v2_table_function_create                            :: proc(factory: V2_Factory_Handle, fn: ^V2_Table_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_name                          :: proc(fn: V2_Table_Function_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_get_docs                          :: proc(fn: V2_Table_Function_Handle, docs: ^V2_Function_Docs_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -927,6 +946,7 @@ foreign libduckdb {
 	duckdb_v2_table_function_set_partitioning_callback         :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Partitioning_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_claim_batch_callback          :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Claim_Batch_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_get_bind_info_callback        :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Get_Bind_Info_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_set_stats_callback                :: proc(fn: V2_Table_Function_Handle, callback: V2_Table_Function_Stats_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_set_projection_pushdown           :: proc(fn: V2_Table_Function_Handle, enable: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_bind_add_result_column            :: proc(info: V2_Table_Function_Bind_Info_Handle, name: ^V2_Identifier, type: V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_bind_set_cardinality              :: proc(info: V2_Table_Function_Bind_Info_Handle, cardinality: V2_Idx, is_exact: bool, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -978,10 +998,14 @@ foreign libduckdb {
 	duckdb_v2_table_function_get_bind_info_get_bind_data       :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_get_bind_info_set_column_identifier :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, column_index: V2_Idx, child_path: [^]V2_Idx, child_path_length: V2_Idx, identifier: V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_get_bind_info_set_option          :: proc(info: V2_Table_Function_Get_Bind_Info_Info_Handle, key: ^V2_Str, value: V2_Value_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_stats_get_user_data               :: proc(info: V2_Table_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_stats_get_bind_data               :: proc(info: V2_Table_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_stats_get_column_index            :: proc(info: V2_Table_Function_Stats_Info_Handle, column_index: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_table_function_stats_get_result_stats            :: proc(info: V2_Table_Function_Stats_Info_Handle, stats: ^V2_Stats_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_connection_register_table_function               :: proc(conn: V2_Connection_Handle, fn: V2_Table_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_table_function_destroy                           :: proc(fn: ^V2_Table_Function_Handle) -> V2_Error ---
 
-	// Aggregate Function (`duckdb_v2.h` lines 5023-5884)
+	// Aggregate Function (`duckdb_v2.h` lines 5023-6068)
 	duckdb_v2_aggregate_function_create                     :: proc(factory: V2_Factory_Handle, fn: ^V2_Aggregate_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_set_name                   :: proc(fn: V2_Aggregate_Function_Handle, name: ^V2_Identifier, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_get_docs                   :: proc(fn: V2_Aggregate_Function_Handle, docs: ^V2_Function_Docs_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -995,6 +1019,7 @@ foreign libduckdb {
 	duckdb_v2_aggregate_function_set_combine_callback       :: proc(fn: V2_Aggregate_Function_Handle, callback: V2_Aggregate_Function_Combine_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_set_finalize_callback      :: proc(fn: V2_Aggregate_Function_Handle, callback: V2_Aggregate_Function_Finalize_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_set_destroy_callback       :: proc(fn: V2_Aggregate_Function_Handle, callback: V2_Aggregate_Function_Destroy_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_set_stats_callback         :: proc(fn: V2_Aggregate_Function_Handle, callback: V2_Aggregate_Function_Stats_Callback_Fn, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_bind_set_return_type       :: proc(info: V2_Aggregate_Function_Bind_Info_Handle, return_type: V2_Logical_Type_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_size_get_user_data         :: proc(info: V2_Aggregate_Function_Size_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_size_get_bind_data         :: proc(info: V2_Aggregate_Function_Size_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
@@ -1024,6 +1049,11 @@ foreign libduckdb {
 	duckdb_v2_aggregate_function_destroy_get_bind_data      :: proc(info: V2_Aggregate_Function_Destroy_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_destroy_get_state_count    :: proc(info: V2_Aggregate_Function_Destroy_Info_Handle, count: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_destroy_get_states         :: proc(info: V2_Aggregate_Function_Destroy_Info_Handle, states: ^[^]rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_stats_get_user_data        :: proc(info: V2_Aggregate_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_stats_get_bind_data        :: proc(info: V2_Aggregate_Function_Stats_Info_Handle, data: ^rawptr, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_stats_get_arg_count        :: proc(info: V2_Aggregate_Function_Stats_Info_Handle, positional_fixed: ^V2_Idx, positional_variadic: ^V2_Idx, named_fixed: ^V2_Idx, named_variadic: ^V2_Idx, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_stats_get_arg_stats        :: proc(info: V2_Aggregate_Function_Stats_Info_Handle, index: V2_Idx, stats: ^V2_Stats_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
+	duckdb_v2_aggregate_function_stats_get_result_stats     :: proc(info: V2_Aggregate_Function_Stats_Info_Handle, stats: ^V2_Stats_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_connection_register_aggregate_function        :: proc(conn: V2_Connection_Handle, fn: V2_Aggregate_Function_Handle, err: ^V2_Error_Info_Handle) -> V2_Error ---
 	duckdb_v2_aggregate_function_destroy                    :: proc(fn: ^V2_Aggregate_Function_Handle) -> V2_Error ---
 

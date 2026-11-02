@@ -943,3 +943,367 @@ spec_v2_aggregate_function_grouped_sum_and_state_destroy :: proc(t: ^testing.T) 
 	expect_v2_ok(t, duckdb.duckdb_v2_vector_get_view(vec0, &view0, &fx.err), &fx.err)
 	testing.expect(t, !duckdb.v2_row_is_valid(view0, 0), "expected NULL aggregate result on empty input")
 }
+
+// ============================================================================
+// 4. Optimizer Statistics Callbacks (`test_capi_v2_stats.cpp`)
+//    Enabled with `-define:DUCKDB_V2_STATS=true` when linking against a
+//    `libduckdb` binary built with `capi_v2_stats.cpp`.
+// ============================================================================
+
+when #config(DUCKDB_V2_STATS, false) {
+
+Stats_Callback_Probe :: struct {
+	set_null:             bool,
+	can_have_null:        bool,
+	set_valid:            bool,
+	can_have_valid:       bool,
+	write_nulls:          bool,
+	calls:                int,
+	arg_count:            duckdb.V2_Idx,
+	arg_can_have_null:    bool,
+	arg_can_have_valid:   bool,
+	read_only_null_rc:    duckdb.V2_Error,
+	read_only_valid_rc:   duckdb.V2_Error,
+	out_of_bounds_rc:     duckdb.V2_Error,
+	result_can_have_null: bool,
+	result_can_have_valid: bool,
+	columns_asked:        u64,
+	table_produced:       duckdb.V2_Idx,
+}
+
+@(private = "file")
+stats_scalar_exec_cb :: proc "c" (
+	info: duckdb.V2_Scalar_Function_Exec_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	out: duckdb.V2_Vector_Handle
+	count: duckdb.V2_Idx
+	raw: rawptr
+	if duckdb.duckdb_v2_scalar_function_exec_get_user_data(info, &ud, err) != .NONE ||
+	   duckdb.duckdb_v2_scalar_function_exec_get_result(info, &out, err) != .NONE ||
+	   duckdb.duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != .NONE ||
+	   duckdb.duckdb_v2_vector_get_data_mutable(out, &raw, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	dst := cast([^]i32)raw
+	for i: duckdb.V2_Idx = 0; i < count; i += 1 {
+		dst[i] = 7
+	}
+	if !probe.write_nulls {
+		return
+	}
+	validity: [^]u64
+	if duckdb.duckdb_v2_vector_flat_get_validity_mutable(out, &validity, err) != .NONE {
+		return
+	}
+	for i: duckdb.V2_Idx = 0; i < count; i += 1 {
+		duckdb.v2_validity_set_invalid(validity, i)
+	}
+}
+
+@(private = "file")
+stats_apply_to_result :: proc "c" (result: duckdb.V2_Stats_Handle, probe: ^Stats_Callback_Probe, err: ^duckdb.V2_Error_Info_Handle) {
+	if probe.set_null {
+		if duckdb.duckdb_v2_stats_set_can_have_null(result, probe.can_have_null, err) != .NONE {
+			return
+		}
+	}
+	if probe.set_valid {
+		if duckdb.duckdb_v2_stats_set_can_have_valid(result, probe.can_have_valid, err) != .NONE {
+			return
+		}
+	}
+	_ = duckdb.duckdb_v2_stats_can_have_null(result, &probe.result_can_have_null, err)
+	_ = duckdb.duckdb_v2_stats_can_have_valid(result, &probe.result_can_have_valid, err)
+}
+
+@(private = "file")
+stats_observe_arg :: proc "c" (arg: duckdb.V2_Stats_Handle, probe: ^Stats_Callback_Probe, err: ^duckdb.V2_Error_Info_Handle) {
+	_ = duckdb.duckdb_v2_stats_can_have_null(arg, &probe.arg_can_have_null, err)
+	_ = duckdb.duckdb_v2_stats_can_have_valid(arg, &probe.arg_can_have_valid, err)
+	probe.read_only_null_rc = duckdb.duckdb_v2_stats_set_can_have_null(arg, false, nil)
+	probe.read_only_valid_rc = duckdb.duckdb_v2_stats_set_can_have_valid(arg, false, nil)
+}
+
+@(private = "file")
+stats_scalar_stats_cb :: proc "c" (
+	info: duckdb.V2_Scalar_Function_Stats_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	pos_fixed, pos_var, named_fixed, named_var: duckdb.V2_Idx
+	arg, result: duckdb.V2_Stats_Handle
+	if duckdb.duckdb_v2_scalar_function_stats_get_user_data(info, &ud, err) != .NONE ||
+	   duckdb.duckdb_v2_scalar_function_stats_get_arg_count(info, &pos_fixed, &pos_var, &named_fixed, &named_var, err) != .NONE ||
+	   duckdb.duckdb_v2_scalar_function_stats_get_arg_stats(info, 0, &arg, err) != .NONE ||
+	   duckdb.duckdb_v2_scalar_function_stats_get_result_stats(info, &result, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	probe.calls += 1
+	probe.arg_count = pos_fixed + pos_var + named_fixed + named_var
+	past_end: duckdb.V2_Stats_Handle
+	probe.out_of_bounds_rc = duckdb.duckdb_v2_scalar_function_stats_get_arg_stats(info, probe.arg_count, &past_end, nil)
+	stats_observe_arg(arg, probe, err)
+	stats_apply_to_result(result, probe, err)
+}
+
+@(private = "file")
+stats_agg_size_cb :: proc "c" (info: duckdb.V2_Aggregate_Function_Size_Info_Handle, err: ^duckdb.V2_Error_Info_Handle) {
+	_ = duckdb.duckdb_v2_aggregate_function_size_set_state_size(info, size_of(i64), err)
+}
+@(private = "file")
+stats_agg_init_cb :: proc "c" (info: duckdb.V2_Aggregate_Function_Init_Info_Handle, err: ^duckdb.V2_Error_Info_Handle) {}
+@(private = "file")
+stats_agg_update_cb :: proc "c" (info: duckdb.V2_Aggregate_Function_Update_Info_Handle, err: ^duckdb.V2_Error_Info_Handle) {}
+@(private = "file")
+stats_agg_combine_cb :: proc "c" (info: duckdb.V2_Aggregate_Function_Combine_Info_Handle, err: ^duckdb.V2_Error_Info_Handle) {}
+@(private = "file")
+stats_agg_finalize_cb :: proc "c" (info: duckdb.V2_Aggregate_Function_Finalize_Info_Handle, err: ^duckdb.V2_Error_Info_Handle) {
+	count, offset: duckdb.V2_Idx
+	result: duckdb.V2_Vector_Handle
+	raw: rawptr
+	if duckdb.duckdb_v2_aggregate_function_finalize_get_state_count(info, &count, err) != .NONE ||
+	   duckdb.duckdb_v2_aggregate_function_finalize_get_result(info, &result, err) != .NONE ||
+	   duckdb.duckdb_v2_aggregate_function_finalize_get_result_offset(info, &offset, err) != .NONE ||
+	   duckdb.duckdb_v2_vector_get_data_mutable(result, &raw, err) != .NONE {
+		return
+	}
+	out := cast([^]i64)raw
+	for i: duckdb.V2_Idx = 0; i < count; i += 1 {
+		out[offset + i] = 7
+	}
+}
+
+@(private = "file")
+stats_agg_stats_cb :: proc "c" (
+	info: duckdb.V2_Aggregate_Function_Stats_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	pos_fixed: duckdb.V2_Idx
+	arg, result: duckdb.V2_Stats_Handle
+	if duckdb.duckdb_v2_aggregate_function_stats_get_user_data(info, &ud, err) != .NONE ||
+	   duckdb.duckdb_v2_aggregate_function_stats_get_arg_count(info, &pos_fixed, nil, nil, nil, err) != .NONE ||
+	   duckdb.duckdb_v2_aggregate_function_stats_get_arg_stats(info, 0, &arg, err) != .NONE ||
+	   duckdb.duckdb_v2_aggregate_function_stats_get_result_stats(info, &result, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	probe.calls += 1
+	probe.arg_count = pos_fixed
+	past_end: duckdb.V2_Stats_Handle
+	probe.out_of_bounds_rc = duckdb.duckdb_v2_aggregate_function_stats_get_arg_stats(info, pos_fixed, &past_end, nil)
+	stats_observe_arg(arg, probe, err)
+	stats_apply_to_result(result, probe, err)
+}
+
+@(private = "file")
+stats_pair_bind_cb :: proc "c" (
+	info: duckdb.V2_Function_Bind_Info_Handle,
+	result: duckdb.V2_Table_Function_Bind_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	factory: duckdb.V2_Factory_Handle
+	int_type: duckdb.V2_Logical_Type_Handle
+	if duckdb.duckdb_v2_context_get_factory(ctx, &factory, err) != .NONE ||
+	   duckdb.duckdb_v2_factory_create_type_from_id(factory, .INTEGER, nil, nil, 0, &int_type, err) != .NONE {
+		return
+	}
+	defer _ = duckdb.duckdb_v2_logical_type_destroy(&int_type)
+	col_a := duckdb.v2_str_from_string("a")
+	col_b := duckdb.v2_str_from_string("b")
+	if duckdb.duckdb_v2_table_function_bind_add_result_column(result, &col_a, int_type, err) == .NONE {
+		_ = duckdb.duckdb_v2_table_function_bind_add_result_column(result, &col_b, int_type, err)
+	}
+}
+
+@(private = "file")
+stats_pair_init_global_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Init_Global_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	if duckdb.duckdb_v2_table_function_init_global_get_user_data(info, &ud, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	probe.table_produced = 0
+}
+
+@(private = "file")
+stats_pair_exec_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Exec_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	chunk: duckdb.V2_Data_Chunk_Handle
+	if duckdb.duckdb_v2_table_function_exec_get_user_data(info, &ud, err) != .NONE ||
+	   duckdb.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	produced: duckdb.V2_Idx = 1 if probe.table_produced < 3 else 0
+	probe.table_produced += produced
+	first_vec: duckdb.V2_Vector_Handle
+	for col: duckdb.V2_Idx = 0; col < 2; col += 1 {
+		vec: duckdb.V2_Vector_Handle
+		raw: rawptr
+		if duckdb.duckdb_v2_data_chunk_get_vector(chunk, col, &vec, err) != .NONE ||
+		   duckdb.duckdb_v2_vector_get_data_mutable(vec, &raw, err) != .NONE {
+			return
+		}
+		if produced > 0 {
+			(cast([^]i32)raw)[0] = 7
+		}
+		if col == 0 {
+			first_vec = vec
+		}
+	}
+	_ = duckdb.duckdb_v2_vector_set_size(first_vec, produced, err)
+}
+
+@(private = "file")
+stats_pair_stats_cb :: proc "c" (
+	info: duckdb.V2_Table_Function_Stats_Info_Handle,
+	ctx: duckdb.V2_Context_Handle,
+	err: ^duckdb.V2_Error_Info_Handle,
+) {
+	ud: rawptr
+	col: duckdb.V2_Idx
+	result: duckdb.V2_Stats_Handle
+	if duckdb.duckdb_v2_table_function_stats_get_user_data(info, &ud, err) != .NONE ||
+	   duckdb.duckdb_v2_table_function_stats_get_column_index(info, &col, err) != .NONE ||
+	   duckdb.duckdb_v2_table_function_stats_get_result_stats(info, &result, err) != .NONE {
+		return
+	}
+	probe := cast(^Stats_Callback_Probe)ud
+	probe.calls += 1
+	probe.columns_asked |= (u64(1) << col)
+	if col == 1 {
+		stats_apply_to_result(result, probe, err)
+	}
+}
+
+@(test)
+spec_v2_function_optimizer_statistics_callbacks :: proc(t: ^testing.T) {
+	fx := dsl_with_memory_db(t)
+
+	// 1. Null-handle validation on `duckdb_v2_stats_*`:
+	out_flag := false
+	testing.expect_value(t, duckdb.duckdb_v2_stats_can_have_null(nil, &out_flag, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_stats_can_have_valid(nil, &out_flag, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_stats_set_can_have_null(nil, false, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_stats_set_can_have_valid(nil, false, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_scalar_function_set_stats_callback(nil, nil, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_aggregate_function_set_stats_callback(nil, nil, nil), duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, duckdb.duckdb_v2_table_function_set_stats_callback(nil, nil, nil), duckdb.V2_Error.INPUT_INVALID)
+
+	sqllogic_statement_ok(&fx, "CREATE TABLE t_stats AS SELECT range::INTEGER AS i FROM range(3)")
+	sqllogic_statement_ok(&fx, "CREATE TABLE tn_stats(i INTEGER)")
+	sqllogic_statement_ok(&fx, "INSERT INTO tn_stats VALUES (1), (NULL), (3)")
+
+	// 2. Scalar function stats callback folds `IS NULL` to false when `can_have_null = false` and verifies read-only arg stats:
+	scalar_probe := Stats_Callback_Probe{
+		set_null       = true,
+		can_have_null  = false,
+		can_have_valid = true,
+		write_nulls    = true,
+	}
+	{
+		fn: duckdb.V2_Scalar_Function_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_create(fx.factory, &fn, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_scalar_function_destroy(&fn)
+		name := duckdb.v2_str_from_string("stats_no_null")
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_name(fn, &name, &fx.err), &fx.err)
+		sig: duckdb.V2_Function_Signature_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_get_signature(fn, &sig, &fx.err), &fx.err)
+		px := duckdb.v2_str_from_string("x")
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_add_parameter(sig, &px, fx.int_type, nil, .STANDARD, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_set_return_type(sig, fx.int_type, &fx.err), &fx.err)
+		ud := duckdb.V2_Opaque{ptr = &scalar_probe}
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_user_data(fn, &ud, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_exec_callback(fn, stats_scalar_exec_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_scalar_function_set_stats_callback(fn, stats_scalar_stats_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_connection_register_scalar_function(fx.conn, fn, &fx.err), &fx.err)
+	}
+	expect_query_column(&fx, "SELECT count(*) FROM t_stats WHERE stats_no_null(i) IS NULL", []i64{0})
+	testing.expect(t, scalar_probe.calls > 0)
+	testing.expect_value(t, scalar_probe.arg_count, duckdb.V2_Idx(1))
+	testing.expect_value(t, scalar_probe.arg_can_have_null, false)
+	testing.expect_value(t, scalar_probe.arg_can_have_valid, true)
+	testing.expect_value(t, scalar_probe.read_only_null_rc, duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, scalar_probe.read_only_valid_rc, duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, scalar_probe.out_of_bounds_rc, duckdb.V2_Error.INPUT_INVALID)
+	testing.expect_value(t, scalar_probe.result_can_have_null, false)
+	testing.expect_value(t, scalar_probe.result_can_have_valid, true)
+
+	// 3. Aggregate function stats callback folds `IS NOT NULL` to false when `can_have_valid = false`:
+	agg_probe := Stats_Callback_Probe{
+		can_have_null  = true,
+		set_valid      = true,
+		can_have_valid = false,
+	}
+	{
+		fn: duckdb.V2_Aggregate_Function_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_create(fx.factory, &fn, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_aggregate_function_destroy(&fn)
+		name := duckdb.v2_str_from_string("stats_agg_all_null")
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_name(fn, &name, &fx.err), &fx.err)
+		sig: duckdb.V2_Function_Signature_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_get_signature(fn, &sig, &fx.err), &fx.err)
+		px := duckdb.v2_str_from_string("x")
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_add_parameter(sig, &px, fx.int_type, nil, .STANDARD, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_function_signature_set_return_type(sig, fx.bigint_type, &fx.err), &fx.err)
+		ud := duckdb.V2_Opaque{ptr = &agg_probe}
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_user_data(fn, &ud, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_size_callback(fn, stats_agg_size_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_init_callback(fn, stats_agg_init_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_update_callback(fn, stats_agg_update_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_combine_callback(fn, stats_agg_combine_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_finalize_callback(fn, stats_agg_finalize_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_aggregate_function_set_stats_callback(fn, stats_agg_stats_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_connection_register_aggregate_function(fx.conn, fn, &fx.err), &fx.err)
+	}
+	expect_query_column(&fx, "SELECT count(*) FROM (SELECT stats_agg_all_null(i) AS a FROM tn_stats) WHERE a IS NOT NULL", []i64{0})
+	testing.expect(t, agg_probe.calls > 0)
+	testing.expect_value(t, agg_probe.arg_can_have_null, true)
+	testing.expect_value(t, agg_probe.arg_can_have_valid, true)
+	testing.expect_value(t, agg_probe.result_can_have_valid, false)
+
+	// 4. Table function per-column stats callback folds `WHERE b IS NOT NULL` to 0 rows while `WHERE a IS NOT NULL` returns all 3 rows:
+	tbl_probe := Stats_Callback_Probe{
+		can_have_null  = true,
+		set_valid      = true,
+		can_have_valid = false,
+	}
+	{
+		fn: duckdb.V2_Table_Function_Handle
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_create(fx.factory, &fn, &fx.err), &fx.err)
+		defer duckdb.duckdb_v2_table_function_destroy(&fn)
+		name := duckdb.v2_str_from_string("stats_pair")
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_name(fn, &name, &fx.err), &fx.err)
+		ud := duckdb.V2_Opaque{ptr = &tbl_probe}
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_user_data(fn, &ud, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_bind_callback(fn, stats_pair_bind_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_init_global_callback(fn, stats_pair_init_global_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_exec_callback(fn, stats_pair_exec_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_table_function_set_stats_callback(fn, stats_pair_stats_cb, &fx.err), &fx.err)
+		expect_v2_ok(t, duckdb.duckdb_v2_connection_register_table_function(fx.conn, fn, &fx.err), &fx.err)
+	}
+	expect_query_column(&fx, "SELECT count(*) FROM stats_pair() WHERE b IS NOT NULL", []i64{0})
+	testing.expect(t, tbl_probe.calls > 0)
+	testing.expect(t, (tbl_probe.columns_asked & 2) != 0)
+	testing.expect_value(t, tbl_probe.result_can_have_valid, false)
+	expect_query_column(&fx, "SELECT count(*) FROM stats_pair() WHERE a IS NOT NULL", []i64{3})
+}
+
+} // when #config(DUCKDB_V2_STATS, false)

@@ -453,6 +453,61 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 	pq_rows_ap, pq_rc_ap := duckdb.prepared_query_execute_as(&pq, context.temp_allocator, &fx.err, "ap", i64(50))
 	expect_v2_ok(t, pq_rc_ap, &fx.err)
 	testing.expect_value(t, len(pq_rows_ap), 2)
+
+	// 7. Reuse `Struct_Appender` across multiple `struct_appender_flush` waves with `Maybe(T)`, `BLOB`, and `,json` fields:
+	Rich_Micro_Batch_Row :: struct {
+		id:      i64             `duckdb:"id,pk"`,
+		opt_val: Maybe(i32)      `duckdb:"opt_val"`,
+		opt_str: Maybe(string)   `duckdb:"opt_str"`,
+		blob:    Maybe([]u8)     `duckdb:"blob"`,
+		meta:    Maybe(Sensor_Meta) `duckdb:"meta,json"`,
+	}
+	rich_ddl := duckdb.create_table_sql(Rich_Micro_Batch_Row, "rich_micro_batches", true, context.temp_allocator)
+	sqllogic_statement_ok(&fx, rich_ddl)
+
+	rich_app: duckdb.Struct_Appender(Rich_Micro_Batch_Row)
+	expect_v2_ok(t, duckdb.struct_appender_create(fx.conn, Rich_Micro_Batch_Row, "rich_micro_batches", &rich_app, context.temp_allocator, &fx.err), &fx.err)
+	defer duckdb.struct_appender_destroy(&rich_app)
+
+	wave1 := [2]Rich_Micro_Batch_Row{
+		{id = 1, opt_val = i32(10), opt_str = "alpha", blob = []u8{1, 2, 3}, meta = Sensor_Meta{firmware = "v1", tags = {"a"}, gain = 1.5}},
+		{id = 2, opt_val = nil, opt_str = nil, blob = nil, meta = nil},
+	}
+	expect_v2_ok(t, duckdb.struct_appender_append(&rich_app, wave1[:], &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.struct_appender_flush(&rich_app, &fx.err), &fx.err)
+	// Flushing an already-empty appender is a no-op:
+	expect_v2_ok(t, duckdb.struct_appender_flush(&rich_app, &fx.err), &fx.err)
+
+	wave2 := [1]Rich_Micro_Batch_Row{
+		{id = 3, opt_val = i32(30), opt_str = "gamma_long_inline_exceeding_12_bytes", blob = []u8{9, 8, 7, 6}, meta = Sensor_Meta{firmware = "v2", tags = {"b", "c"}, gain = 2.25}},
+	}
+	expect_v2_ok(t, duckdb.struct_appender_append(&rich_app, wave2[:], &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.struct_appender_flush(&rich_app, &fx.err), &fx.err)
+
+	rich_out, rich_rc := duckdb.query_as(
+		fx.conn,
+		Rich_Micro_Batch_Row,
+		"SELECT id, opt_val, opt_str, blob, meta FROM rich_micro_batches ORDER BY id",
+		context.temp_allocator,
+		&fx.err,
+	)
+	expect_v2_ok(t, rich_rc, &fx.err)
+	testing.expect_value(t, len(rich_out), 3)
+	if len(rich_out) == 3 {
+		testing.expect_value(t, rich_out[0].opt_val, Maybe(i32)(10))
+		testing.expect_value(t, rich_out[1].opt_val, Maybe(i32)(nil))
+		testing.expect_value(t, rich_out[1].opt_str, Maybe(string)(nil))
+		testing.expect(t, rich_out[1].blob == nil)
+		testing.expect(t, rich_out[1].meta == nil)
+		testing.expect_value(t, rich_out[2].opt_str, Maybe(string)("gamma_long_inline_exceeding_12_bytes"))
+		if m3, ok := rich_out[2].meta.?; ok {
+			testing.expect_value(t, m3.firmware, "v2")
+			testing.expect_value(t, len(m3.tags), 2)
+			testing.expect_value(t, m3.gain, 2.25)
+		} else {
+			testing.expect(t, false, "expected non-nil meta on row 3")
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------

@@ -27,7 +27,9 @@ jobs:
         run: odin check duckdb -no-entry-point
 
       - name: Check ATDD specification suite syntax & types
-        run: odin check tests -no-entry-point
+        run: |
+          odin check tests -no-entry-point
+          odin check tests -no-entry-point -define:DUCKDB_V2_STATS=true
 
       - name: Check benchmark suite syntax & types
         run: odin check benchmarks
