@@ -225,37 +225,46 @@ parse_single_struct_field :: #force_inline proc(f: reflect.Struct_Field) -> Stru
 			m.ignored = true
 			return m
 		}
-		rem := tag_val
-		idx := 0
-		for len(rem) > 0 {
-			comma := strings.index_byte(rem, ',')
-			p: string
-			if comma < 0 {
-				p = rem
-				rem = ""
-			} else {
-				p = rem[:comma]
-				rem = rem[comma + 1:]
-			}
-			trimmed := strings.trim_space(p)
-			if idx == 0 {
-				idx += 1
-				if len(trimmed) > 0 {
-					m.column_name = trimmed
+		first_comma := strings.index_byte(tag_val, ',')
+		if first_comma < 0 {
+			if len(tag_val) > 0 {
+				if tag_val[0] == ' ' || tag_val[len(tag_val) - 1] == ' ' {
+					trimmed := strings.trim_space(tag_val)
+					if len(trimmed) > 0 {
+						m.column_name = trimmed
+					}
+				} else {
+					m.column_name = tag_val
 				}
-				continue
 			}
-			idx += 1
-			if trimmed == "pk" || trimmed == "primary_key" {
-				m.is_pk = true
-			} else if trimmed == "not_null" {
-				m.not_null = true
-			} else if trimmed == "unique" {
-				m.is_unique = true
-			} else if trimmed == "json" {
-				m.is_json = true
-			} else if strings.has_prefix(trimmed, "default=") {
-				m.default_val = trimmed[len("default="):]
+		} else {
+			first_part := strings.trim_space(tag_val[:first_comma])
+			if len(first_part) > 0 {
+				m.column_name = first_part
+			}
+			rem := tag_val[first_comma + 1:]
+			for len(rem) > 0 {
+				comma := strings.index_byte(rem, ',')
+				p: string
+				if comma < 0 {
+					p = rem
+					rem = ""
+				} else {
+					p = rem[:comma]
+					rem = rem[comma + 1:]
+				}
+				trimmed := strings.trim_space(p)
+				if trimmed == "pk" || trimmed == "primary_key" {
+					m.is_pk = true
+				} else if trimmed == "not_null" {
+					m.not_null = true
+				} else if trimmed == "unique" {
+					m.is_unique = true
+				} else if trimmed == "json" {
+					m.is_json = true
+				} else if strings.has_prefix(trimmed, "default=") {
+					m.default_val = trimmed[len("default="):]
+				}
 			}
 		}
 	}
@@ -1082,28 +1091,19 @@ create_table_sql :: proc(
 // Collects non-ignored `Struct_Field_Mapping` entries for `$T` into `stack_buf` when `active_count <= 16`,
 // or allocates an exact-sized slice on `allocator` (guaranteeing `len == cap` for safe `delete(slice, allocator)`).
 @(private = "file")
-collect_active_struct_fields :: proc(
+collect_active_struct_fields :: #force_inline proc(
 	$T: typeid,
 	stack_buf: ^[16]Struct_Field_Mapping,
 	allocator: mem.Allocator,
 ) -> (active: []Struct_Field_Mapping, dyn_allocated: []Struct_Field_Mapping) where intrinsics.type_is_struct(T) {
 	raw_fields := reflect.struct_fields_zipped(T)
-	if len(raw_fields) <= len(stack_buf^) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				stack_buf^[n] = m
-				n += 1
-			}
-		}
-		return stack_buf[:n], nil
-	}
-
 	active_count := 0
 	for rf in raw_fields {
 		m := parse_single_struct_field(rf)
 		if !m.ignored {
+			if active_count < len(stack_buf^) {
+				stack_buf^[active_count] = m
+			}
 			active_count += 1
 		}
 	}
@@ -1111,23 +1111,18 @@ collect_active_struct_fields :: proc(
 		return nil, nil
 	}
 	if active_count <= len(stack_buf^) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				stack_buf^[n] = m
-				n += 1
-			}
-		}
-		return stack_buf[:n], nil
+		return stack_buf[:active_count], nil
 	}
 
 	dyn_slice := make([]Struct_Field_Mapping, active_count, allocator)
+	copy(dyn_slice[:len(stack_buf^)], stack_buf[:])
 	n := 0
 	for rf in raw_fields {
 		m := parse_single_struct_field(rf)
 		if !m.ignored {
-			dyn_slice[n] = m
+			if n >= len(stack_buf^) {
+				dyn_slice[n] = m
+			}
 			n += 1
 		}
 	}
@@ -1859,6 +1854,74 @@ prepared_query_execute_as :: proc(
 	return unmarshal_result_chunks_with_mapping(&out, res, active_fields, col_to_field, views, allocator, err)
 }
 
+@(private = "file")
+unmarshal_result_with_schema :: #force_inline proc(
+	out: ^[dynamic]$T,
+	res: V2_Result_Handle,
+	active_fields: []Struct_Field_Mapping,
+	allocator: mem.Allocator,
+	err: ^V2_Error_Info_Handle = nil,
+) -> ([dynamic]T, V2_Error) where intrinsics.type_is_struct(T) {
+	schema: V2_Schema_Handle
+	rc := duckdb_v2_result_get_schema(res, &schema, err)
+	if rc != .NONE {
+		return out^, rc
+	}
+	defer duckdb_v2_schema_destroy(&schema)
+
+	schema_col_count: V2_Idx
+	rc = duckdb_v2_schema_get_count(schema, &schema_col_count, err)
+	if rc != .NONE {
+		return out^, rc
+	}
+
+	stack_col_to_field: [16]int = ---
+	stack_field_claimed: [16]bool
+	stack_views: [16]V2_Vector_View = ---
+	col_to_field: []int
+	field_claimed: []bool
+	views: []V2_Vector_View
+	if int(schema_col_count) <= len(stack_col_to_field) && len(active_fields) <= len(stack_field_claimed) {
+		col_to_field  = stack_col_to_field[:int(schema_col_count)]
+		field_claimed = stack_field_claimed[:len(active_fields)]
+		views         = stack_views[:int(schema_col_count)]
+	} else {
+		col_to_field  = make([]int, int(schema_col_count), context.temp_allocator)
+		field_claimed = make([]bool, len(active_fields), context.temp_allocator)
+		views         = make([]V2_Vector_View, int(schema_col_count), context.temp_allocator)
+	}
+
+	rc = bind_schema_to_struct_fields(schema, active_fields, col_to_field, field_claimed, "query_as", err)
+	if rc != .NONE {
+		return out^, rc
+	}
+
+	return unmarshal_result_chunks_with_mapping(out, res, active_fields, col_to_field, views, allocator, err)
+}
+
+@(private = "package")
+query_as_with_params :: proc(
+	conn: V2_Connection_Handle,
+	$T: typeid,
+	sql: string,
+	params: []Query_Param,
+	allocator := context.allocator,
+	err: ^V2_Error_Info_Handle = nil,
+) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
+	out = make([dynamic]T, allocator)
+	stack_active: [16]Struct_Field_Mapping = ---
+	active_fields, _ := collect_active_struct_fields(T, &stack_active, context.temp_allocator)
+
+	res: V2_Result_Handle
+	rc = v2_query_with_params(conn, sql, &res, params, err)
+	if rc != .NONE {
+		return out, rc
+	}
+	defer duckdb_v2_result_destroy(&res)
+
+	return unmarshal_result_with_schema(&out, res, active_fields, allocator, err)
+}
+
 // Executes `sql` via C API v2, matches result columns by name against struct `duckdb:"..."` tags
 // (with positional fallback when unaliased), verifies runtime `V2_Logical_Type_Id` compatibility
 // before dereferencing vector buffers, and unmarshals the returned rows into `[dynamic]T`.
@@ -1882,41 +1945,7 @@ query_as :: proc(
 	}
 	defer duckdb_v2_result_destroy(&res)
 
-	schema: V2_Schema_Handle
-	rc = duckdb_v2_result_get_schema(res, &schema, err)
-	if rc != .NONE {
-		return out, rc
-	}
-	defer duckdb_v2_schema_destroy(&schema)
-
-	schema_col_count: V2_Idx
-	rc = duckdb_v2_schema_get_count(schema, &schema_col_count, err)
-	if rc != .NONE {
-		return out, rc
-	}
-
-	stack_col_to_field: [16]int = ---
-	stack_field_claimed: [16]bool
-	stack_views: [16]V2_Vector_View = ---
-	col_to_field: []int
-	field_claimed: []bool
-	views: []V2_Vector_View
-	if int(schema_col_count) <= len(stack_col_to_field) && len(active_fields) <= len(stack_field_claimed) {
-		col_to_field  = stack_col_to_field[:int(schema_col_count)]
-		field_claimed = stack_field_claimed[:len(active_fields)]
-		views         = stack_views[:int(schema_col_count)]
-	} else {
-		col_to_field  = make([]int, int(schema_col_count), context.temp_allocator)
-		field_claimed = make([]bool, len(active_fields), context.temp_allocator)
-		views         = make([]V2_Vector_View, int(schema_col_count), context.temp_allocator)
-	}
-
-	rc = bind_schema_to_struct_fields(schema, active_fields, col_to_field, field_claimed, "query_as", err)
-	if rc != .NONE {
-		return out, rc
-	}
-
-	return unmarshal_result_chunks_with_mapping(&out, res, active_fields, col_to_field, views, allocator, err)
+	return unmarshal_result_with_schema(&out, res, active_fields, allocator, err)
 }
 
 @(private = "file")

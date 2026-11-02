@@ -383,10 +383,10 @@ next_line_slice :: #force_inline proc(rest: ^string) -> (line: string, ok: bool)
 }
 
 @(private = "file")
-parse_sqllogic_block_body :: proc(
+parse_sqllogic_block_body :: #force_inline proc(
 	rest: ^string,
-	trim_expected: bool,
-	stop_on_blank_sql_without_sep: bool,
+	$trim_expected: bool,
+	$stop_on_blank_sql_without_sep: bool,
 	allocator := context.temp_allocator,
 ) -> (sql_str: string, exp_str: string) {
 	sql_b: strings.Builder

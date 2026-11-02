@@ -357,7 +357,7 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 	return strings.to_string(b)
 }
 
-// Compiles `q` to SQL and executes it with its bound `q.params` via `query_as`.
+// Compiles `q` to SQL and executes it with its bound `q.params` via `query_as_with_params`.
 query_execute_as :: proc(
 	conn: V2_Connection_Handle,
 	$T: typeid,
@@ -367,27 +367,7 @@ query_execute_as :: proc(
 ) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
 	q_mut := q
 	sql := query_to_sql(q_mut, context.temp_allocator)
-	params := sb_slice(&q_mut.params)
-	switch len(params) {
-	case 0:
-		return query_as(conn, T, sql, allocator, err)
-	case 1:
-		return query_as(conn, T, sql, allocator, err, params[0])
-	case 2:
-		return query_as(conn, T, sql, allocator, err, params[0], params[1])
-	case:
-		stack_anys: [16]any
-		anys: []any
-		if len(params) <= len(stack_anys) {
-			anys = stack_anys[:len(params)]
-		} else {
-			anys = make([]any, len(params), context.temp_allocator)
-		}
-		for &p, idx in params {
-			anys[idx] = p
-		}
-		return query_as(conn, T, sql, allocator, err, ..anys)
-	}
+	return query_as_with_params(conn, T, sql, sb_slice(&q_mut.params), allocator, err)
 }
 
 // Compiles `q` to SQL, binds & validates its result schema against `$T`, and prepares a reusable

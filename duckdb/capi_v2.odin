@@ -1830,60 +1830,8 @@ Query_Param :: union {
 	V2_Logical_Type_Id, // Represents a SQL NULL of the given logical type (`.SQLNULL` for untyped `nil`)
 }
 
-// Boxes an Odin `any` value into a self-contained `Query_Param` by value (dereferencing stack pointers
-// immediately so the returned `Query_Param` can safely outlive the caller's stack frame).
-v2_box_query_param :: proc(arg: any) -> (param: Query_Param, ok: bool) {
-	if arg == nil || arg.data == nil {
-		return V2_Logical_Type_Id.SQLNULL, true
-	}
-
-	switch v in arg {
-	case Query_Param:
-		return v, true
-	case bool:
-		return v, true
-	case i8:
-		return v, true
-	case i16:
-		return v, true
-	case i32:
-		return v, true
-	case i64:
-		return v, true
-	case int:
-		return i64(v), true
-	case u8:
-		return v, true
-	case u16:
-		return v, true
-	case u32:
-		return v, true
-	case u64:
-		return v, true
-	case uint:
-		return u64(v), true
-	case f32:
-		return v, true
-	case f64:
-		return v, true
-	case string:
-		return v, true
-	case cstring:
-		return string(v), true
-	case []u8:
-		return v, true
-	case V2_Value_Handle:
-		return v, true
-	case V2_Hugeint:
-		return v, true
-	case V2_Uhugeint:
-		return v, true
-	case V2_Interval:
-		return v, true
-	case V2_Logical_Type_Id:
-		return v, true
-	}
-
+@(private = "file")
+v2_box_query_param_reflect :: proc(arg: any) -> (param: Query_Param, ok: bool) {
 	ti := reflect.type_info_base(type_info_of(arg.id))
 	if u, is_u := ti.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
 		sub := reflect.get_union_variant(arg)
@@ -1936,6 +1884,63 @@ v2_box_query_param :: proc(arg: any) -> (param: Query_Param, ok: bool) {
 	}
 
 	return nil, false
+}
+
+// Boxes an Odin `any` value into a self-contained `Query_Param` by value (dereferencing stack pointers
+// immediately so the returned `Query_Param` can safely outlive the caller's stack frame).
+v2_box_query_param :: #force_inline proc(arg: any) -> (param: Query_Param, ok: bool) {
+	if arg == nil || arg.data == nil {
+		return V2_Logical_Type_Id.SQLNULL, true
+	}
+
+	switch v in arg {
+	case i64:
+		return v, true
+	case int:
+		return i64(v), true
+	case string:
+		return v, true
+	case f64:
+		return v, true
+	case bool:
+		return v, true
+	case i32:
+		return v, true
+	case f32:
+		return v, true
+	case u64:
+		return v, true
+	case uint:
+		return u64(v), true
+	case u32:
+		return v, true
+	case i16:
+		return v, true
+	case u16:
+		return v, true
+	case i8:
+		return v, true
+	case u8:
+		return v, true
+	case []u8:
+		return v, true
+	case cstring:
+		return string(v), true
+	case Query_Param:
+		return v, true
+	case V2_Value_Handle:
+		return v, true
+	case V2_Hugeint:
+		return v, true
+	case V2_Uhugeint:
+		return v, true
+	case V2_Interval:
+		return v, true
+	case V2_Logical_Type_Id:
+		return v, true
+	}
+
+	return v2_box_query_param_reflect(arg)
 }
 
 // Clones an existing `V2_Value_Handle` into an independently owned `out_val` handle.
@@ -2108,6 +2113,65 @@ v2_parse_single_stmt :: proc(
 	}
 	defer duckdb_v2_statement_iterator_destroy(&iter)
 	return duckdb_v2_statement_iterator_next(iter, out_stmt, err)
+}
+
+@(private = "package")
+v2_box_query_params :: proc(
+	factory: V2_Factory_Handle,
+	params: []Query_Param,
+	stack_vals: ^[16]V2_Value_Handle,
+	out_vals: ^[]V2_Value_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if len(params) <= len(stack_vals^) {
+		out_vals^ = stack_vals[:len(params)]
+	} else {
+		out_vals^ = make([]V2_Value_Handle, len(params), context.temp_allocator)
+	}
+	for p, idx in params {
+		if rc := v2_create_value_from_query_param(factory, p, &out_vals^[idx], err); rc != .NONE {
+			v2_destroy_boxed_args(out_vals^[:idx])
+			return rc
+		}
+	}
+	return .NONE
+}
+
+@(private = "package")
+v2_query_with_params :: proc(
+	conn: V2_Connection_Handle,
+	sql: string,
+	out_result: ^V2_Result_Handle,
+	params: []Query_Param,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	if out_result != nil {
+		out_result^ = nil
+	}
+	stmt: V2_Sql_Statement_Handle
+	rc := v2_parse_single_stmt(conn, sql, &stmt, err)
+	if rc != .NONE || stmt == nil {
+		return rc
+	}
+	defer duckdb_v2_sql_statement_destroy(&stmt)
+
+	if len(params) == 0 {
+		return duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, out_result, err)
+	}
+
+	factory: V2_Factory_Handle
+	if rc = duckdb_v2_connection_get_factory(conn, &factory, err); rc != .NONE {
+		return rc
+	}
+
+	stack_vals: [16]V2_Value_Handle
+	vals: []V2_Value_Handle
+	if rc = v2_box_query_params(factory, params, &stack_vals, &vals, err); rc != .NONE {
+		return rc
+	}
+	defer v2_destroy_boxed_args(vals)
+
+	return duckdb_v2_statement_execute(conn, stmt, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
 }
 
 // Parses and executes a single SQL statement with optional positional `args` (`..any`).
