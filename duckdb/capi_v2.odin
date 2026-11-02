@@ -1434,18 +1434,14 @@ arrow_stream_release :: proc "contextless" (stream: ^Arrow_Array_Stream) {
 	}
 }
 
-// Assembles a `V2_Bytes` in a vector's arena (`test_capi_v2.hpp` lines 216-250, 518-536):
-v2_vector_assign_string :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, s: string, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
-	return v2_vector_assign_bytes(vec, index, transmute([]u8)s, err)
-}
-
-v2_vector_assign_bytes :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, data: []u8, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
-	arena: V2_Arena_Handle
-	rc := duckdb_v2_vector_get_arena(vec, &arena, err)
-	if rc != .NONE {
-		return rc
-	}
-
+// Encodes `data` into a `V2_Bytes` struct using `arena` when `len(data) > 12` (`V2_BYTES_INLINE_LENGTH`).
+// Avoids repeated `duckdb_v2_vector_get_arena` and `duckdb_v2_vector_get_data_mutable` FFI calls in bulk loops.
+v2_bytes_encode_in_arena :: #force_inline proc "contextless" (
+	arena: V2_Arena_Handle,
+	data: []u8,
+	out_bytes: ^V2_Bytes,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
 	storage: V2_Bytes
 	if len(data) <= V2_BYTES_INLINE_LENGTH {
 		storage.inlined.length = u32(len(data))
@@ -1454,19 +1450,38 @@ v2_vector_assign_bytes :: proc "contextless" (vec: V2_Vector_Handle, index: V2_I
 		}
 	} else {
 		bytes_ptr: [^]u8
-		rc = duckdb_v2_arena_allocate(arena, V2_Idx(len(data)), &bytes_ptr, err)
-		if rc != .NONE {
+		if rc := duckdb_v2_arena_allocate(arena, V2_Idx(len(data)), &bytes_ptr, err); rc != .NONE {
 			return rc
 		}
 		intrinsics.mem_copy(bytes_ptr, raw_data(data), len(data))
 		storage.pointer.length = u32(len(data))
 		storage.pointer.ptr = bytes_ptr
-		intrinsics.mem_copy(&storage.pointer.prefix[0], bytes_ptr, 4)
+		(cast(^u32)&storage.pointer.prefix[0])^ = (cast(^u32)bytes_ptr)^
+	}
+	out_bytes^ = storage
+	return .NONE
+}
+
+// Assembles a `V2_Bytes` in a vector's arena (`test_capi_v2.hpp` lines 216-250, 518-536):
+v2_vector_assign_string :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, s: string, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
+	return v2_vector_assign_bytes(vec, index, transmute([]u8)s, err)
+}
+
+v2_vector_assign_bytes :: proc "contextless" (vec: V2_Vector_Handle, index: V2_Idx, data: []u8, err: ^V2_Error_Info_Handle = nil) -> V2_Error {
+	arena: V2_Arena_Handle
+	if len(data) > V2_BYTES_INLINE_LENGTH {
+		if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
+			return rc
+		}
+	}
+
+	storage: V2_Bytes
+	if rc := v2_bytes_encode_in_arena(arena, data, &storage, err); rc != .NONE {
+		return rc
 	}
 
 	raw: rawptr
-	rc = duckdb_v2_vector_get_data_mutable(vec, &raw, err)
-	if rc != .NONE {
+	if rc := duckdb_v2_vector_get_data_mutable(vec, &raw, err); rc != .NONE {
 		return rc
 	}
 	arr := cast([^]V2_Bytes)raw
@@ -1514,6 +1529,103 @@ v2_two_call_string :: proc(
 	return string(buf[:int(length)]), .NONE
 }
 
+// Fast check for simple ASCII SQL identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`) that are not common SQL keywords.
+@(private = "package")
+is_simple_unquoted_identifier :: proc "contextless" (s: string) -> (simple: bool, is_keyword: bool) {
+	if len(s) == 0 {
+		return false, false
+	}
+	c0 := s[0]
+	if !((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_') {
+		return false, false
+	}
+	has_non_alpha := c0 == '_'
+	for i := 1; i < len(s); i += 1 {
+		ch := s[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			continue
+		}
+		if (ch >= '0' && ch <= '9') || ch == '_' {
+			has_non_alpha = true
+			continue
+		}
+		return false, false
+	}
+	// None of the SQL reserved words contain '_' or digits, and all have 2 <= len <= 10.
+	if has_non_alpha || len(s) < 2 || len(s) > 10 {
+		return true, false
+	}
+	// Common SQL reserved words must be double-quoted:
+	switch s {
+	case "select", "SELECT", "order", "ORDER", "group", "GROUP", "where", "WHERE",
+	     "from", "FROM", "table", "TABLE", "index", "INDEX", "join", "JOIN",
+	     "limit", "LIMIT", "offset", "OFFSET", "union", "UNION", "distinct", "DISTINCT",
+	     "default", "DEFAULT", "primary", "PRIMARY", "foreign", "FOREIGN", "references", "REFERENCES",
+	     "check", "CHECK", "unique", "UNIQUE", "null", "NULL", "true", "TRUE", "false", "FALSE",
+	     "as", "AS", "in", "IN", "is", "IS", "not", "NOT", "and", "AND", "or", "OR",
+	     "on", "ON", "using", "USING", "all", "ALL", "any", "ANY", "case", "CASE",
+	     "when", "WHEN", "then", "THEN", "else", "ELSE", "end", "END", "create", "CREATE",
+	     "drop", "DROP", "alter", "ALTER", "insert", "INSERT", "update", "UPDATE", "delete", "DELETE",
+	     "into", "INTO", "values", "VALUES", "set", "SET", "with", "WITH", "having", "HAVING",
+	     "window", "WINDOW", "qualify", "QUALIFY", "asc", "ASC", "desc", "DESC":
+		return false, true
+	}
+	return true, false
+}
+
+// Fast check for dot-separated qualified SQL identifiers (`schema.table` or `catalog.schema.table`)
+// where every segment is a simple unquoted identifier.
+@(private = "package")
+is_simple_qualified_identifier :: proc "contextless" (s: string) -> bool {
+	if len(s) == 0 {
+		return false
+	}
+	rem := s
+	for {
+		dot := -1
+		for i := 0; i < len(rem); i += 1 {
+			if rem[i] == '.' {
+				dot = i
+				break
+			}
+		}
+		if dot < 0 {
+			simple, _ := is_simple_unquoted_identifier(rem)
+			return simple
+		}
+		simple, _ := is_simple_unquoted_identifier(rem[:dot])
+		if !simple {
+			return false
+		}
+		rem = rem[dot + 1:]
+	}
+}
+
+// Writes a quoted SQL identifier directly into `b` without intermediate allocations when possible.
+@(private = "package")
+write_quoted_identifier :: proc(b: ^strings.Builder, name: string, allow_qualified := false) {
+	if len(name) == 0 {
+		strings.write_string(b, `""`)
+		return
+	}
+	simple, is_kw := is_simple_unquoted_identifier(name)
+	if simple {
+		strings.write_string(b, name)
+		return
+	}
+	if is_kw {
+		strings.write_byte(b, '"')
+		strings.write_string(b, name)
+		strings.write_byte(b, '"')
+		return
+	}
+	if allow_qualified && is_simple_qualified_identifier(name) {
+		strings.write_string(b, name)
+		return
+	}
+	strings.write_string(b, v2_quote_identifier(name, allow_qualified, b.buf.allocator))
+}
+
 // Renders a SQL identifier using DuckDB 2.0's `duckdb_v2_identifier_render_quoted` rules:
 // bare valid identifiers pass through unchanged (`sensor_readings` -> `sensor_readings`),
 // while SQL reserved words, spaces, leading digits, and embedded quotes are double-quoted
@@ -1527,7 +1639,21 @@ v2_quote_identifier :: proc(
 	if len(name) == 0 {
 		return `""`
 	}
+	simple, is_kw := is_simple_unquoted_identifier(name)
+	if simple {
+		return name
+	}
+	if is_kw {
+		buf := make([]u8, len(name) + 2, allocator)
+		buf[0] = '"'
+		intrinsics.mem_copy(&buf[1], raw_data(name), len(name))
+		buf[len(name) + 1] = '"'
+		return string(buf)
+	}
 	if allow_qualified {
+		if is_simple_qualified_identifier(name) {
+			return name
+		}
 		qname: V2_Qname_Handle
 		view := v2_str_from_string(name)
 		if duckdb_v2_qname_parse(&view, &qname, nil) == .NONE && qname != nil {
@@ -1538,8 +1664,17 @@ v2_quote_identifier :: proc(
 		}
 	}
 	ident := V2_Identifier(v2_str_from_string(name))
+	stack_buf: [128]u8
 	length: V2_Idx
-	if duckdb_v2_identifier_render_quoted(&ident, nil, 0, &length, nil) != .NONE {
+	rc := duckdb_v2_identifier_render_quoted(&ident, &stack_buf[0], len(stack_buf), &length, nil)
+	if rc == .NONE {
+		out := make([]u8, int(length), allocator)
+		if length > 0 {
+			intrinsics.mem_copy(raw_data(out), &stack_buf[0], int(length))
+		}
+		return string(out)
+	}
+	if rc != .INPUT_OBJECT_SIZE {
 		return name
 	}
 	buf := make([]u8, int(length) + 1, allocator)
@@ -1662,6 +1797,56 @@ v2_create_value_from_any :: proc(
 		return duckdb_v2_value_create_null(factory, sql_null_type, out_val, err)
 	}
 
+	switch v in arg {
+	case bool:
+		return duckdb_v2_value_create_bool(factory, v, out_val, err)
+	case i8:
+		return duckdb_v2_value_create_tinyint(factory, v, out_val, err)
+	case i16:
+		return duckdb_v2_value_create_smallint(factory, v, out_val, err)
+	case i32:
+		return duckdb_v2_value_create_int(factory, v, out_val, err)
+	case i64:
+		return duckdb_v2_value_create_bigint(factory, v, out_val, err)
+	case int:
+		return duckdb_v2_value_create_bigint(factory, i64(v), out_val, err)
+	case u8:
+		return duckdb_v2_value_create_utinyint(factory, v, out_val, err)
+	case u16:
+		return duckdb_v2_value_create_usmallint(factory, v, out_val, err)
+	case u32:
+		return duckdb_v2_value_create_uint(factory, v, out_val, err)
+	case u64:
+		return duckdb_v2_value_create_ubigint(factory, v, out_val, err)
+	case uint:
+		return duckdb_v2_value_create_ubigint(factory, u64(v), out_val, err)
+	case f32:
+		return duckdb_v2_value_create_float(factory, v, out_val, err)
+	case f64:
+		return duckdb_v2_value_create_double(factory, v, out_val, err)
+	case string:
+		s := v2_str_from_string(v)
+		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
+	case cstring:
+		s := v2_str_from_string(string(v))
+		return duckdb_v2_value_create_varchar(factory, &s, out_val, err)
+	case []u8:
+		s := V2_Str{ptr = raw_data(v), len = V2_Idx(len(v))}
+		return duckdb_v2_value_create_blob(factory, &s, out_val, err)
+	case V2_Value_Handle:
+		out_val^ = v
+		return .NONE
+	case V2_Hugeint:
+		tmp := v
+		return duckdb_v2_value_create_hugeint(factory, &tmp, out_val, err)
+	case V2_Uhugeint:
+		tmp := v
+		return duckdb_v2_value_create_uhugeint(factory, &tmp, out_val, err)
+	case V2_Interval:
+		tmp := v
+		return duckdb_v2_value_create_interval(factory, &tmp, out_val, err)
+	}
+
 	ti := reflect.type_info_base(type_info_of(arg.id))
 	if u, is_u := ti.variant.(reflect.Type_Info_Union); is_u && len(u.variants) == 1 && !u.no_nil {
 		sub := reflect.get_union_variant(arg)
@@ -1678,24 +1863,6 @@ v2_create_value_from_any :: proc(
 			return duckdb_v2_value_create_null(factory, null_t, out_val, err)
 		}
 		return v2_create_value_from_any(factory, sub, out_val, err)
-	}
-
-	switch v in arg {
-	case V2_Value_Handle:
-		out_val^ = v
-		return .NONE
-	case V2_Hugeint:
-		tmp := v
-		return duckdb_v2_value_create_hugeint(factory, &tmp, out_val, err)
-	case V2_Uhugeint:
-		tmp := v
-		return duckdb_v2_value_create_uhugeint(factory, &tmp, out_val, err)
-	case V2_Interval:
-		tmp := v
-		return duckdb_v2_value_create_interval(factory, &tmp, out_val, err)
-	case []u8:
-		s := V2_Str{ptr = raw_data(v), len = V2_Idx(len(v))}
-		return duckdb_v2_value_create_blob(factory, &s, out_val, err)
 	}
 
 	#partial switch v in ti.variant {
@@ -1755,7 +1922,17 @@ v2_parse_single_stmt :: proc(
 	if out_stmt != nil {
 		out_stmt^ = nil
 	}
-	sql_cstr := strings.clone_to_cstring(sql, context.temp_allocator)
+	stack_buf: [256]u8 = ---
+	sql_cstr: cstring
+	if len(sql) < len(stack_buf) {
+		if len(sql) > 0 {
+			intrinsics.mem_copy(&stack_buf[0], raw_data(sql), len(sql))
+		}
+		stack_buf[len(sql)] = 0
+		sql_cstr = cstring(&stack_buf[0])
+	} else {
+		sql_cstr = strings.clone_to_cstring(sql, context.temp_allocator)
+	}
 	iter: V2_Statement_Iterator_Handle
 	rc := duckdb_v2_parse_sql(conn, sql_cstr, &iter, err)
 	if rc != .NONE {
@@ -1792,7 +1969,13 @@ v2_query :: proc(
 		return rc
 	}
 
-	vals := make([]V2_Value_Handle, len(args), context.temp_allocator)
+	stack_vals: [16]V2_Value_Handle
+	vals: []V2_Value_Handle
+	if len(args) <= len(stack_vals) {
+		vals = stack_vals[:len(args)]
+	} else {
+		vals = make([]V2_Value_Handle, len(args), context.temp_allocator)
+	}
 	defer {
 		for &v in vals {
 			if v != nil {
@@ -1877,6 +2060,81 @@ v2_prepare :: proc(
 	return duckdb_v2_prepared_statement_create(conn, stmt, require_cacheable, out_prepared, err)
 }
 
+// Executes a pre-compiled `V2_Prepared_Statement_Handle` with optional positional `args` (`..any`).
+v2_prepared_execute :: proc(
+	conn: V2_Connection_Handle,
+	prepared: V2_Prepared_Statement_Handle,
+	out_result: ^V2_Result_Handle,
+	err: ^V2_Error_Info_Handle = nil,
+	args: ..any,
+) -> V2_Error {
+	if out_result != nil {
+		out_result^ = nil
+	}
+	if len(args) == 0 {
+		return duckdb_v2_prepared_statement_execute(prepared, nil, nil, 0, out_result, err)
+	}
+
+	factory: V2_Factory_Handle
+	if rc := duckdb_v2_connection_get_factory(conn, &factory, err); rc != .NONE {
+		return rc
+	}
+
+	stack_vals: [16]V2_Value_Handle
+	vals: []V2_Value_Handle
+	if len(args) <= len(stack_vals) {
+		vals = stack_vals[:len(args)]
+	} else {
+		vals = make([]V2_Value_Handle, len(args), context.temp_allocator)
+	}
+	defer {
+		for &v in vals {
+			if v != nil {
+				duckdb_v2_value_destroy(&v)
+			}
+		}
+	}
+
+	for a, idx in args {
+		if rc := v2_create_value_from_any(factory, a, &vals[idx], err); rc != .NONE {
+			return rc
+		}
+	}
+
+	return duckdb_v2_prepared_statement_execute(prepared, nil, raw_data(vals), V2_Idx(len(vals)), out_result, err)
+}
+
+// Zero-copy helper for executing a static NUL-terminated SQL statement (`cstring`) without any parameters.
+v2_exec_cstring :: proc(
+	conn: V2_Connection_Handle,
+	sql_cstr: cstring,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	iter: V2_Statement_Iterator_Handle
+	rc := duckdb_v2_parse_sql(conn, sql_cstr, &iter, err)
+	if rc != .NONE {
+		return rc
+	}
+	defer duckdb_v2_statement_iterator_destroy(&iter)
+
+	stmt: V2_Sql_Statement_Handle
+	rc = duckdb_v2_statement_iterator_next(iter, &stmt, err)
+	if rc != .NONE || stmt == nil {
+		return rc
+	}
+	defer duckdb_v2_sql_statement_destroy(&stmt)
+
+	result: V2_Result_Handle
+	rc = duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, &result, err)
+	if rc != .NONE {
+		return rc
+	}
+	defer duckdb_v2_result_destroy(&result)
+
+	changed: V2_Idx
+	return duckdb_v2_result_drain(result, &changed, err)
+}
+
 // Executes `body` inside a `BEGIN TRANSACTION ... COMMIT` block, automatically issuing `ROLLBACK` on error.
 v2_with_transaction :: proc(
 	conn: V2_Connection_Handle,
@@ -1884,12 +2142,12 @@ v2_with_transaction :: proc(
 	user_data: rawptr = nil,
 	err: ^V2_Error_Info_Handle = nil,
 ) -> V2_Error {
-	if rc := v2_exec_drain(conn, "BEGIN TRANSACTION", nil, err); rc != .NONE {
+	if rc := v2_exec_cstring(conn, "BEGIN TRANSACTION", err); rc != .NONE {
 		return rc
 	}
 	if rc := body(conn, user_data, err); rc != .NONE {
-		_ = v2_exec_drain(conn, "ROLLBACK", nil, nil)
+		_ = v2_exec_cstring(conn, "ROLLBACK", nil)
 		return rc
 	}
-	return v2_exec_drain(conn, "COMMIT", nil, err)
+	return v2_exec_cstring(conn, "COMMIT", err)
 }

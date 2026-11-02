@@ -215,6 +215,24 @@ exec :: proc(d: ^Database, sql: string) -> (string, bool) {
 
 // Escape single quotes for safe SQL string literal embedding (`'` -> `''`)
 sql_escape :: proc(s: string, allocator := context.temp_allocator) -> string {
+	if strings.index_byte(s, '\'') < 0 {
+		return s
+	}
 	res, _ := strings.replace_all(s, "'", "''", allocator)
 	return res
+}
+
+// Writes `s` into `b` with single quotes escaped (`'` -> `''`) without intermediate allocations.
+write_sql_escaped :: #force_inline proc(b: ^strings.Builder, s: string) {
+	rem := s
+	for {
+		idx := strings.index_byte(rem, '\'')
+		if idx < 0 {
+			strings.write_string(b, rem)
+			return
+		}
+		strings.write_string(b, rem[:idx])
+		strings.write_string(b, "''")
+		rem = rem[idx + 1:]
+	}
 }

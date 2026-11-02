@@ -414,6 +414,42 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 		testing.expect_value(t, bound_rows[0].region, "eu")
 		testing.expect_value(t, bound_rows[0].latency_ms, i64(40))
 	}
+
+	// 5. Prepare a reusable `Prepared_Query(Event_Latency)` via `query_prepare_as` and execute it multiple times:
+	pq: duckdb.Prepared_Query(Event_Latency)
+	expect_v2_ok(t, duckdb.query_prepare_as(fx.conn, Event_Latency, q_bound, &pq, false, context.temp_allocator, &fx.err), &fx.err)
+	defer duckdb.prepared_query_destroy(&pq)
+
+	pq_rows_eu, pq_rc_eu := duckdb.prepared_query_execute_as(&pq, context.temp_allocator, &fx.err, "eu", i64(20))
+	expect_v2_ok(t, pq_rc_eu, &fx.err)
+	testing.expect_value(t, len(pq_rows_eu), 1)
+	if len(pq_rows_eu) == 1 {
+		testing.expect_value(t, pq_rows_eu[0].region, "eu")
+		testing.expect_value(t, pq_rows_eu[0].latency_ms, i64(40))
+	}
+
+	pq_rows_us, pq_rc_us := duckdb.prepared_query_execute_as(&pq, context.temp_allocator, &fx.err, "us", i64(50))
+	expect_v2_ok(t, pq_rc_us, &fx.err)
+	testing.expect_value(t, len(pq_rows_us), 1)
+	if len(pq_rows_us) == 1 {
+		testing.expect_value(t, pq_rows_us[0].region, "us")
+		testing.expect_value(t, pq_rows_us[0].latency_ms, i64(90))
+	}
+
+	// 6. Stream multiple micro-batches through a reusable `Struct_Appender(Event_Latency)`:
+	app: duckdb.Struct_Appender(Event_Latency)
+	expect_v2_ok(t, duckdb.struct_appender_create(fx.conn, Event_Latency, "events", &app, context.temp_allocator, &fx.err), &fx.err)
+	defer duckdb.struct_appender_destroy(&app)
+
+	mb1 := [2]Event_Latency{{region = "ap", latency_ms = 12}, {region = "ap", latency_ms = 55}}
+	mb2 := [1]Event_Latency{{region = "ap", latency_ms = 88}}
+	expect_v2_ok(t, duckdb.struct_appender_append(&app, mb1[:], &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.struct_appender_append(&app, mb2[:], &fx.err), &fx.err)
+	expect_v2_ok(t, duckdb.struct_appender_flush(&app, &fx.err), &fx.err)
+
+	pq_rows_ap, pq_rc_ap := duckdb.prepared_query_execute_as(&pq, context.temp_allocator, &fx.err, "ap", i64(50))
+	expect_v2_ok(t, pq_rc_ap, &fx.err)
+	testing.expect_value(t, len(pq_rows_ap), 2)
 }
 
 // ----------------------------------------------------------------------------
