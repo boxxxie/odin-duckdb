@@ -382,6 +382,98 @@ next_line_slice :: #force_inline proc(rest: ^string) -> (line: string, ok: bool)
 	return line, true
 }
 
+@(private = "file")
+parse_sqllogic_block_body :: proc(
+	rest: ^string,
+	trim_expected: bool,
+	stop_on_blank_sql_without_sep: bool,
+	allocator := context.temp_allocator,
+) -> (sql_str: string, exp_str: string) {
+	sql_b: strings.Builder
+	exp_b: strings.Builder
+	sql_single := ""
+	sql_lines := 0
+	exp_single := ""
+	exp_lines := 0
+	in_expected := false
+
+	for len(rest^) > 0 {
+		saved_rest := rest^
+		raw_l, lok := next_line_slice(rest)
+		if !lok {
+			break
+		}
+		trimmed_l := strings.trim_space(raw_l)
+		if trimmed_l == "----" {
+			in_expected = true
+			continue
+		}
+		if in_expected {
+			if len(trimmed_l) == 0 {
+				break
+			}
+			if is_sqllogic_directive_start(trimmed_l) {
+				rest^ = saved_rest
+				break
+			}
+			exp_line := trimmed_l if trim_expected else raw_l
+			if exp_lines == 0 {
+				exp_single = exp_line
+			} else {
+				if exp_lines == 1 {
+					exp_b = strings.builder_make(0, len(exp_single) + len(exp_line) + 32, allocator)
+					strings.write_string(&exp_b, exp_single)
+				}
+				strings.write_byte(&exp_b, '\n')
+				strings.write_string(&exp_b, exp_line)
+			}
+			exp_lines += 1
+		} else {
+			if is_sqllogic_directive_start(trimmed_l) || (len(trimmed_l) > 0 && trimmed_l[0] == '#') {
+				rest^ = saved_rest
+				break
+			}
+			if stop_on_blank_sql_without_sep && len(trimmed_l) == 0 {
+				// Check if a `----` separator appears before the next directive
+				probe := rest^
+				has_sep := false
+				for len(probe) > 0 {
+					pl, pok := next_line_slice(&probe)
+					if !pok {
+						break
+					}
+					pt := strings.trim_space(pl)
+					if pt == "----" {
+						has_sep = true
+						break
+					}
+					if is_sqllogic_directive_start(pt) || (len(pt) > 0 && pt[0] == '#') {
+						break
+					}
+				}
+				if !has_sep {
+					break
+				}
+			}
+			if sql_lines == 0 {
+				sql_single = raw_l
+			} else {
+				if sql_lines == 1 {
+					sql_b = strings.builder_make(0, len(sql_single) + len(raw_l) + 64, allocator)
+					strings.write_string(&sql_b, sql_single)
+				}
+				strings.write_byte(&sql_b, '\n')
+				strings.write_string(&sql_b, raw_l)
+			}
+			sql_lines += 1
+		}
+	}
+
+	sql_str = sql_single if sql_lines <= 1 else strings.to_string(sql_b)
+	exp_str = exp_single if exp_lines <= 1 else strings.to_string(exp_b)
+	return sql_str, exp_str
+}
+
 // Parses a DuckDB SQLLogicTest `.test` script into structured `Sqllogic_Directive` items.
 sqllogic_parse_script :: proc(
 	content: string,
@@ -422,88 +514,7 @@ sqllogic_parse_script :: proc(
 			is_error := tok1 == "error"
 			conn_id := tok2
 
-			sql_b: strings.Builder
-			exp_b: strings.Builder
-			sql_single := ""
-			sql_lines := 0
-			exp_single := ""
-			exp_lines := 0
-			in_expected := false
-
-			for len(rest) > 0 {
-				saved_rest := rest
-				raw_l, lok := next_line_slice(&rest)
-				if !lok {
-					break
-				}
-				trimmed_l := strings.trim_space(raw_l)
-				if trimmed_l == "----" {
-					in_expected = true
-					continue
-				}
-				if in_expected {
-					if len(trimmed_l) == 0 {
-						break
-					}
-					if is_sqllogic_directive_start(trimmed_l) {
-						rest = saved_rest
-						break
-					}
-					if exp_lines == 0 {
-						exp_single = trimmed_l
-					} else {
-						if exp_lines == 1 {
-							exp_b = strings.builder_make(0, len(exp_single) + len(trimmed_l) + 32, allocator)
-							strings.write_string(&exp_b, exp_single)
-						}
-						strings.write_byte(&exp_b, '\n')
-						strings.write_string(&exp_b, trimmed_l)
-					}
-					exp_lines += 1
-				} else {
-					if is_sqllogic_directive_start(trimmed_l) || (len(trimmed_l) > 0 && trimmed_l[0] == '#') {
-						rest = saved_rest
-						break
-					}
-					if len(trimmed_l) == 0 {
-						// Check if a `----` separator appears before the next directive
-						probe := rest
-						has_sep := false
-						for len(probe) > 0 {
-							pl, pok := next_line_slice(&probe)
-							if !pok {
-								break
-							}
-							pt := strings.trim_space(pl)
-							if pt == "----" {
-								has_sep = true
-								break
-							}
-							if is_sqllogic_directive_start(pt) || (len(pt) > 0 && pt[0] == '#') {
-								break
-							}
-						}
-						if !has_sep {
-							break
-						}
-					}
-					if sql_lines == 0 {
-						sql_single = raw_l
-					} else {
-						if sql_lines == 1 {
-							sql_b = strings.builder_make(0, len(sql_single) + len(raw_l) + 64, allocator)
-							strings.write_string(&sql_b, sql_single)
-						}
-						strings.write_byte(&sql_b, '\n')
-						strings.write_string(&sql_b, raw_l)
-					}
-					sql_lines += 1
-				}
-			}
-
-			sql_str := sql_single if sql_lines <= 1 else strings.to_string(sql_b)
-			exp_str := exp_single if exp_lines <= 1 else strings.to_string(exp_b)
-
+			sql_str, exp_str := parse_sqllogic_block_body(&rest, true, true, allocator)
 			append(
 				&directives,
 				Sqllogic_Directive{
@@ -536,66 +547,7 @@ sqllogic_parse_script :: proc(
 				}
 			}
 
-			sql_b: strings.Builder
-			exp_b: strings.Builder
-			sql_single := ""
-			sql_lines := 0
-			exp_single := ""
-			exp_lines := 0
-			in_expected := false
-
-			for len(rest) > 0 {
-				saved_rest := rest
-				raw_l, lok := next_line_slice(&rest)
-				if !lok {
-					break
-				}
-				trimmed_l := strings.trim_space(raw_l)
-				if trimmed_l == "----" {
-					in_expected = true
-					continue
-				}
-				if in_expected {
-					if len(trimmed_l) == 0 {
-						break
-					}
-					if is_sqllogic_directive_start(trimmed_l) {
-						rest = saved_rest
-						break
-					}
-					if exp_lines == 0 {
-						exp_single = raw_l
-					} else {
-						if exp_lines == 1 {
-							exp_b = strings.builder_make(0, len(exp_single) + len(raw_l) + 32, allocator)
-							strings.write_string(&exp_b, exp_single)
-						}
-						strings.write_byte(&exp_b, '\n')
-						strings.write_string(&exp_b, raw_l)
-					}
-					exp_lines += 1
-				} else {
-					if is_sqllogic_directive_start(trimmed_l) || (len(trimmed_l) > 0 && trimmed_l[0] == '#') {
-						rest = saved_rest
-						break
-					}
-					if sql_lines == 0 {
-						sql_single = raw_l
-					} else {
-						if sql_lines == 1 {
-							sql_b = strings.builder_make(0, len(sql_single) + len(raw_l) + 64, allocator)
-							strings.write_string(&sql_b, sql_single)
-						}
-						strings.write_byte(&sql_b, '\n')
-						strings.write_string(&sql_b, raw_l)
-					}
-					sql_lines += 1
-				}
-			}
-
-			sql_str := sql_single if sql_lines <= 1 else strings.to_string(sql_b)
-			exp_str := exp_single if exp_lines <= 1 else strings.to_string(exp_b)
-
+			sql_str, exp_str := parse_sqllogic_block_body(&rest, false, false, allocator)
 			append(
 				&directives,
 				Sqllogic_Directive{

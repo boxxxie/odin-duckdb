@@ -1049,88 +1049,89 @@ create_table_sql :: proc(
 
 	col_idx := 0
 	for f in fields {
-		col_name := f.name
-		is_pk := false
-		not_null := false
-		is_unique := false
-		is_json := false
-		default_val := ""
-
-		if tag_val, has_tag := lookup_duckdb_tag(f.tag); has_tag {
-			if tag_val == "-" {
-				continue
-			}
-			rem := tag_val
-			idx := 0
-			for len(rem) > 0 {
-				comma := strings.index_byte(rem, ',')
-				p: string
-				if comma < 0 {
-					p = rem
-					rem = ""
-				} else {
-					p = rem[:comma]
-					rem = rem[comma + 1:]
-				}
-				trimmed := strings.trim_space(p)
-				if idx == 0 {
-					idx += 1
-					if len(trimmed) > 0 {
-						col_name = trimmed
-					}
-					continue
-				}
-				idx += 1
-				if trimmed == "pk" || trimmed == "primary_key" {
-					is_pk = true
-				} else if trimmed == "not_null" {
-					not_null = true
-				} else if trimmed == "unique" {
-					is_unique = true
-				} else if trimmed == "json" {
-					is_json = true
-				} else if strings.has_prefix(trimmed, "default=") {
-					default_val = trimmed[len("default="):]
-				}
-			}
+		m := parse_single_struct_field(f)
+		if m.ignored {
+			continue
 		}
-
-		sql_type: string
-		if is_json {
-			sql_type = "JSON"
-		} else {
-			unwrapped, _, _, _ := unwrap_maybe_type(f.type)
-			sql_t, _, ok := unwrapped_type_to_duckdb_sql(unwrapped)
-			if !ok {
-				continue
-			}
-			sql_type = sql_t
-		}
-
 		if col_idx > 0 {
 			strings.write_string(&b, ", ")
 		}
 		col_idx += 1
 
-		write_quoted_identifier(&b, col_name, false)
+		write_quoted_identifier(&b, m.column_name, false)
 		strings.write_byte(&b, ' ')
-		strings.write_string(&b, sql_type)
-		if is_pk {
+		strings.write_string(&b, m.sql_type)
+		if m.is_pk {
 			strings.write_string(&b, " PRIMARY KEY")
 		}
-		if not_null {
+		if m.not_null {
 			strings.write_string(&b, " NOT NULL")
 		}
-		if is_unique {
+		if m.is_unique {
 			strings.write_string(&b, " UNIQUE")
 		}
-		if len(default_val) > 0 {
+		if len(m.default_val) > 0 {
 			strings.write_string(&b, " DEFAULT ")
-			strings.write_string(&b, default_val)
+			strings.write_string(&b, m.default_val)
 		}
 	}
 	strings.write_byte(&b, ')')
 	return strings.to_string(b)
+}
+
+// Collects non-ignored `Struct_Field_Mapping` entries for `$T` into `stack_buf` when `active_count <= 16`,
+// or allocates an exact-sized slice on `allocator` (guaranteeing `len == cap` for safe `delete(slice, allocator)`).
+@(private = "file")
+collect_active_struct_fields :: proc(
+	$T: typeid,
+	stack_buf: ^[16]Struct_Field_Mapping,
+	allocator: mem.Allocator,
+) -> (active: []Struct_Field_Mapping, dyn_allocated: []Struct_Field_Mapping) where intrinsics.type_is_struct(T) {
+	raw_fields := reflect.struct_fields_zipped(T)
+	if len(raw_fields) <= len(stack_buf^) {
+		n := 0
+		for rf in raw_fields {
+			m := parse_single_struct_field(rf)
+			if !m.ignored {
+				stack_buf^[n] = m
+				n += 1
+			}
+		}
+		return stack_buf[:n], nil
+	}
+
+	active_count := 0
+	for rf in raw_fields {
+		m := parse_single_struct_field(rf)
+		if !m.ignored {
+			active_count += 1
+		}
+	}
+	if active_count == 0 {
+		return nil, nil
+	}
+	if active_count <= len(stack_buf^) {
+		n := 0
+		for rf in raw_fields {
+			m := parse_single_struct_field(rf)
+			if !m.ignored {
+				stack_buf^[n] = m
+				n += 1
+			}
+		}
+		return stack_buf[:n], nil
+	}
+
+	dyn_slice := make([]Struct_Field_Mapping, active_count, allocator)
+	n := 0
+	for rf in raw_fields {
+		m := parse_single_struct_field(rf)
+		if !m.ignored {
+			dyn_slice[n] = m
+			n += 1
+		}
+	}
+	return dyn_slice, dyn_slice
 }
 
 // Bulk-appends a slice of Odin structs `[]T` into `table_name` using DuckDB 2.0's C API v2
@@ -1144,174 +1145,16 @@ append_slice :: proc(
 	if len(rows) == 0 {
 		return .NONE
 	}
-
-	raw_fields := reflect.struct_fields_zipped(T)
-	stack_active: [16]Struct_Field_Mapping = ---
-	active_fields: []Struct_Field_Mapping
-	if len(raw_fields) <= len(stack_active) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				stack_active[n] = m
-				n += 1
-			}
-		}
-		active_fields = stack_active[:n]
-	} else {
-		dyn_active := make([dynamic]Struct_Field_Mapping, 0, len(raw_fields), context.temp_allocator)
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				append(&dyn_active, m)
-			}
-		}
-		active_fields = dyn_active[:]
-	}
-	col_count := len(active_fields)
-	if col_count == 0 {
-		return .INPUT_INVALID
-	}
-
-	factory: V2_Factory_Handle
-	if rc := duckdb_v2_connection_get_factory(conn, &factory, err); rc != .NONE {
+	app: Struct_Appender(T)
+	if rc := struct_appender_create(conn, T, table_name, &app, context.temp_allocator, err); rc != .NONE {
 		return rc
 	}
+	defer struct_appender_destroy(&app)
 
-	stack_col_types: [16]V2_Logical_Type_Handle
-	stack_col_names: [16]V2_Identifier = ---
-	stack_col_vecs:  [16]V2_Vector_Handle = ---
-	col_types: []V2_Logical_Type_Handle
-	col_names: []V2_Identifier
-	col_vecs:  []V2_Vector_Handle
-	if col_count <= len(stack_col_types) {
-		col_types = stack_col_types[:col_count]
-		col_names = stack_col_names[:col_count]
-		col_vecs  = stack_col_vecs[:col_count]
-	} else {
-		col_types = make([]V2_Logical_Type_Handle, col_count, context.temp_allocator)
-		col_names = make([]V2_Identifier, col_count, context.temp_allocator)
-		col_vecs  = make([]V2_Vector_Handle, col_count, context.temp_allocator)
-	}
-	defer {
-		for &ct in col_types {
-			if ct != nil {
-				duckdb_v2_logical_type_destroy(&ct)
-			}
-		}
-	}
-
-	has_any_json := false
-	for f, idx in active_fields {
-		if rc := duckdb_v2_factory_create_type_from_id(factory, f.type_id, nil, nil, 0, &col_types[idx], err); rc != .NONE {
-			return rc
-		}
-		col_names[idx] = V2_Identifier(v2_str_from_string(f.column_name))
-		if f.is_json {
-			has_any_json = true
-		}
-	}
-
-	collection: V2_Column_Data_Collection_Handle
-	if rc := duckdb_v2_column_data_collection_create(
-		factory,
-		raw_data(col_types),
-		V2_Idx(col_count),
-		&collection,
-		err,
-	); rc != .NONE {
+	if rc := struct_appender_append(&app, rows, err); rc != .NONE {
 		return rc
 	}
-	defer duckdb_v2_column_data_collection_destroy(&collection)
-
-	append_state: V2_Column_Data_Collection_Append_State_Handle
-	if rc := duckdb_v2_column_data_collection_append_state_create(collection, &append_state, err); rc != .NONE {
-		return rc
-	}
-	defer duckdb_v2_column_data_collection_append_state_destroy(&append_state)
-
-	chunk: V2_Data_Chunk_Handle
-	if rc := duckdb_v2_data_chunk_create(factory, raw_data(col_types), V2_Idx(col_count), &chunk, err); rc != .NONE {
-		return rc
-	}
-	defer duckdb_v2_data_chunk_destroy(&chunk)
-
-	for col_idx := 0; col_idx < col_count; col_idx += 1 {
-		if rc := duckdb_v2_data_chunk_get_vector(chunk, V2_Idx(col_idx), &col_vecs[col_idx], err); rc != .NONE {
-			return rc
-		}
-	}
-
-	chunk_cap: V2_Idx
-	if rc := duckdb_v2_data_chunk_get_capacity(chunk, &chunk_cap, err); rc != .NONE {
-		return rc
-	}
-	if chunk_cap == 0 {
-		chunk_cap = 2048
-	}
-
-	if rc := append_rows_to_collection(
-		collection,
-		append_state,
-		chunk,
-		chunk_cap,
-		active_fields,
-		col_vecs,
-		has_any_json,
-		false,
-		rows,
-		err,
-	); rc != .NONE {
-		return rc
-	}
-
-	// Build `INSERT INTO <table> (<cols...>) SELECT * FROM __odin_append_src` with quoted identifiers:
-	sql_b := strings.builder_make(0, 64 + col_count * 16, context.temp_allocator)
-	strings.write_string(&sql_b, "INSERT INTO ")
-	write_quoted_identifier(&sql_b, table_name, true)
-	strings.write_string(&sql_b, " (")
-	for f, idx in active_fields {
-		if idx > 0 {
-			strings.write_string(&sql_b, ", ")
-		}
-		write_quoted_identifier(&sql_b, f.column_name, false)
-	}
-	strings.write_string(&sql_b, ") SELECT * FROM __odin_append_src")
-	strings.write_byte(&sql_b, 0)
-	c_sql := cstring(raw_data(sql_b.buf))
-
-	iter: V2_Statement_Iterator_Handle
-	if rc := duckdb_v2_parse_sql(conn, c_sql, &iter, err); rc != .NONE {
-		return rc
-	}
-	defer duckdb_v2_statement_iterator_destroy(&iter)
-
-	stmt: V2_Sql_Statement_Handle
-	if rc := duckdb_v2_statement_iterator_next(iter, &stmt, err); rc != .NONE {
-		return rc
-	}
-	defer duckdb_v2_sql_statement_destroy(&stmt)
-
-	src_ident := V2_Identifier(v2_str_from_string("__odin_append_src"))
-	if rc := duckdb_v2_statement_add_collection(
-		stmt,
-		&src_ident,
-		collection,
-		raw_data(col_names),
-		V2_Idx(col_count),
-		err,
-	); rc != .NONE {
-		return rc
-	}
-
-	res: V2_Result_Handle
-	if rc := duckdb_v2_statement_execute(conn, stmt, nil, nil, 0, &res, err); rc != .NONE {
-		return rc
-	}
-	defer duckdb_v2_result_destroy(&res)
-
-	rows_changed: V2_Idx
-	return duckdb_v2_result_drain(res, &rows_changed, err)
+	return struct_appender_flush_internal(&app, false, err)
 }
 
 // ============================================================================
@@ -1330,6 +1173,7 @@ Struct_Appender :: struct($T: typeid) where intrinsics.type_is_struct(T) {
 	chunk_cap:      V2_Idx,
 	col_count:      int,
 	has_any_json:   bool,
+	chunk_dirty:    bool,
 	fields_in:      [16]Struct_Field_Mapping,
 	col_types_in:   [16]V2_Logical_Type_Handle,
 	col_names_in:   [16]V2_Identifier,
@@ -1380,40 +1224,23 @@ struct_appender_create :: proc(
 		allocator = allocator,
 	}
 
-	raw_fields := reflect.struct_fields_zipped(T)
-	if len(raw_fields) <= len(out_app.fields_in) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				out_app.fields_in[n] = m
-				n += 1
-			}
-		}
-		out_app.col_count = n
-	} else {
-		dyn := make([dynamic]Struct_Field_Mapping, 0, len(raw_fields), allocator)
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				append(&dyn, m)
-			}
-		}
-		out_app.col_count = len(dyn)
-		out_app.fields_dyn = dyn[:]
+	active, dyn_fields := collect_active_struct_fields(T, &out_app.fields_in, allocator)
+	out_app.col_count = len(active)
+	out_app.fields_dyn = dyn_fields
+	if out_app.col_count == 0 {
+		return .INPUT_INVALID
+	}
+	if out_app.col_count > len(out_app.fields_in) {
 		out_app.col_types_dyn = make([]V2_Logical_Type_Handle, out_app.col_count, allocator)
 		out_app.col_names_dyn = make([]V2_Identifier, out_app.col_count, allocator)
 		out_app.col_vecs_dyn  = make([]V2_Vector_Handle, out_app.col_count, allocator)
 	}
-	if out_app.col_count == 0 {
-		return .INPUT_INVALID
-	}
 
 	if rc := duckdb_v2_connection_get_factory(conn, &out_app.factory, err); rc != .NONE {
+		struct_appender_destroy(out_app)
 		return rc
 	}
 
-	active := struct_appender_fields(out_app)
 	col_names := struct_appender_col_names(out_app)
 	col_vecs := struct_appender_col_vecs(out_app)
 	col_types := out_app.col_types_in[:out_app.col_count] if out_app.col_count <= len(out_app.col_types_in) else out_app.col_types_dyn
@@ -1524,6 +1351,8 @@ struct_appender_append :: proc(
 	if len(rows) == 0 {
 		return .NONE
 	}
+	clear_first := app.chunk_dirty
+	app.chunk_dirty = true
 	return append_rows_to_collection(
 		app.collection,
 		app.append_state,
@@ -1532,10 +1361,101 @@ struct_appender_append :: proc(
 		struct_appender_fields(app),
 		struct_appender_col_vecs(app),
 		app.has_any_json,
-		true,
+		clear_first,
 		rows,
 		err,
 	)
+}
+
+@(private = "file")
+append_scalar_col :: #force_inline proc(
+	$Col_Type: typeid,
+	raw: rawptr,
+	rows: []$Row,
+	batch_start, batch_len: int,
+	f: Struct_Field_Mapping,
+	vec: V2_Vector_Handle,
+	err: ^V2_Error_Info_Handle,
+) -> V2_Error {
+	dst := cast([^]Col_Type)raw
+	if !f.is_maybe {
+		for r_idx := 0; r_idx < batch_len; r_idx += 1 {
+			row_ptr := cast([^]u8)&rows[batch_start + r_idx]
+			dst[r_idx] = (cast(^Col_Type)&row_ptr[f.offset])^
+		}
+		return .NONE
+	}
+	validity_mask: [^]u64
+	for r_idx := 0; r_idx < batch_len; r_idx += 1 {
+		row_ptr := cast([^]u8)&rows[batch_start + r_idx]
+		field_ptr := cast(rawptr)&row_ptr[f.offset]
+		if !maybe_field_is_present(field_ptr, f) {
+			if validity_mask == nil {
+				if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE {
+					return rc
+				}
+			}
+			v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
+			continue
+		}
+		dst[r_idx] = (cast(^Col_Type)field_ptr)^
+	}
+	return .NONE
+}
+
+@(private = "file")
+append_bytes_col :: #force_inline proc(
+	$Col_Type: typeid,
+	raw: rawptr,
+	rows: []$Row,
+	batch_start, batch_len: int,
+	f: Struct_Field_Mapping,
+	vec: V2_Vector_Handle,
+	err: ^V2_Error_Info_Handle,
+) -> V2_Error {
+	arena: V2_Arena_Handle
+	dst := cast([^]V2_Bytes)raw
+	if !f.is_maybe {
+		for r_idx := 0; r_idx < batch_len; r_idx += 1 {
+			row_ptr := cast([^]u8)&rows[batch_start + r_idx]
+			val := (cast(^Col_Type)&row_ptr[f.offset])^
+			raw_bytes := transmute([]u8)val when Col_Type == string else val
+			if len(raw_bytes) > V2_BYTES_INLINE_LENGTH && arena == nil {
+				if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
+					return rc
+				}
+			}
+			if rc := v2_bytes_encode_in_arena(arena, raw_bytes, &dst[r_idx], err); rc != .NONE {
+				return rc
+			}
+		}
+		return .NONE
+	}
+	validity_mask: [^]u64
+	for r_idx := 0; r_idx < batch_len; r_idx += 1 {
+		row_ptr := cast([^]u8)&rows[batch_start + r_idx]
+		field_ptr := cast(rawptr)&row_ptr[f.offset]
+		if !maybe_field_is_present(field_ptr, f) {
+			if validity_mask == nil {
+				if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE {
+					return rc
+				}
+			}
+			v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
+			continue
+		}
+		val := (cast(^Col_Type)field_ptr)^
+		raw_bytes := transmute([]u8)val when Col_Type == string else val
+		if len(raw_bytes) > V2_BYTES_INLINE_LENGTH && arena == nil {
+			if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
+				return rc
+			}
+		}
+		if rc := v2_bytes_encode_in_arena(arena, raw_bytes, &dst[r_idx], err); rc != .NONE {
+			return rc
+		}
+	}
+	return .NONE
 }
 
 @(private = "file")
@@ -1579,134 +1499,12 @@ append_rows_to_collection :: proc(
 				return rc
 			}
 
-			// Fast path for non-nullable, non-JSON columns: hoist type switch and arena lookup out of the inner row loop.
-			if !f.is_maybe && !f.is_json {
-				#partial switch f.type_id {
-				case .BOOLEAN:
-					dst := cast([^]bool)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^bool)&row_ptr[f.offset])^
-					}
-				case .TINYINT:
-					dst := cast([^]i8)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^i8)&row_ptr[f.offset])^
-					}
-				case .SMALLINT:
-					dst := cast([^]i16)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^i16)&row_ptr[f.offset])^
-					}
-				case .INTEGER:
-					dst := cast([^]i32)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^i32)&row_ptr[f.offset])^
-					}
-				case .BIGINT:
-					dst := cast([^]i64)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^i64)&row_ptr[f.offset])^
-					}
-				case .UTINYINT:
-					dst := cast([^]u8)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^u8)&row_ptr[f.offset])^
-					}
-				case .USMALLINT:
-					dst := cast([^]u16)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^u16)&row_ptr[f.offset])^
-					}
-				case .UINTEGER:
-					dst := cast([^]u32)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^u32)&row_ptr[f.offset])^
-					}
-				case .UBIGINT:
-					dst := cast([^]u64)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^u64)&row_ptr[f.offset])^
-					}
-				case .FLOAT:
-					dst := cast([^]f32)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^f32)&row_ptr[f.offset])^
-					}
-				case .DOUBLE:
-					dst := cast([^]f64)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^f64)&row_ptr[f.offset])^
-					}
-				case .HUGEINT:
-					dst := cast([^]V2_Hugeint)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^V2_Hugeint)&row_ptr[f.offset])^
-					}
-				case .UHUGEINT:
-					dst := cast([^]V2_Uhugeint)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^V2_Uhugeint)&row_ptr[f.offset])^
-					}
-				case .INTERVAL:
-					dst := cast([^]V2_Interval)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						dst[r_idx] = (cast(^V2_Interval)&row_ptr[f.offset])^
-					}
-				case .VARCHAR:
-					arena: V2_Arena_Handle
-					dst := cast([^]V2_Bytes)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						s := (cast(^string)&row_ptr[f.offset])^
-						if len(s) > V2_BYTES_INLINE_LENGTH && arena == nil {
-							if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
-								return rc
-							}
-						}
-						if rc := v2_bytes_encode_in_arena(arena, transmute([]u8)s, &dst[r_idx], err); rc != .NONE {
-							return rc
-						}
-					}
-				case .BLOB:
-					arena: V2_Arena_Handle
-					dst := cast([^]V2_Bytes)raw
-					for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-						row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-						b := (cast(^[]u8)&row_ptr[f.offset])^
-						if len(b) > V2_BYTES_INLINE_LENGTH && arena == nil {
-							if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
-								return rc
-							}
-						}
-						if rc := v2_bytes_encode_in_arena(arena, b, &dst[r_idx], err); rc != .NONE {
-							return rc
-						}
-					}
-				}
-				continue
-			}
-
-			arena: V2_Arena_Handle
-			bytes_dst := cast([^]V2_Bytes)raw
-
 			if f.is_json {
+				arena: V2_Arena_Handle
 				if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
 					return rc
 				}
+				bytes_dst := cast([^]V2_Bytes)raw
 				json_opt: json.Marshal_Options
 				validity_mask: [^]u64
 				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
@@ -1735,247 +1533,27 @@ append_rows_to_collection :: proc(
 				continue
 			}
 
-			// Nullable Maybe(T) column: hoist type switch and mutate validity mask bitmask directly
-			validity_mask: [^]u64
+			rc_col: V2_Error
 			#partial switch f.type_id {
-			case .BOOLEAN:
-				dst := cast([^]bool)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^bool)field_ptr)^
-				}
-			case .TINYINT:
-				dst := cast([^]i8)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^i8)field_ptr)^
-				}
-			case .SMALLINT:
-				dst := cast([^]i16)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^i16)field_ptr)^
-				}
-			case .INTEGER:
-				dst := cast([^]i32)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^i32)field_ptr)^
-				}
-			case .BIGINT:
-				dst := cast([^]i64)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^i64)field_ptr)^
-				}
-			case .UTINYINT:
-				dst := cast([^]u8)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^u8)field_ptr)^
-				}
-			case .USMALLINT:
-				dst := cast([^]u16)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^u16)field_ptr)^
-				}
-			case .UINTEGER:
-				dst := cast([^]u32)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^u32)field_ptr)^
-				}
-			case .UBIGINT:
-				dst := cast([^]u64)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^u64)field_ptr)^
-				}
-			case .FLOAT:
-				dst := cast([^]f32)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^f32)field_ptr)^
-				}
-			case .DOUBLE:
-				dst := cast([^]f64)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^f64)field_ptr)^
-				}
-			case .HUGEINT:
-				dst := cast([^]V2_Hugeint)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^V2_Hugeint)field_ptr)^
-				}
-			case .UHUGEINT:
-				dst := cast([^]V2_Uhugeint)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^V2_Uhugeint)field_ptr)^
-				}
-			case .INTERVAL:
-				dst := cast([^]V2_Interval)raw
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					dst[r_idx] = (cast(^V2_Interval)field_ptr)^
-				}
-			case .VARCHAR:
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					s := (cast(^string)field_ptr)^
-					if len(s) > V2_BYTES_INLINE_LENGTH && arena == nil {
-						if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
-							return rc
-						}
-					}
-					if rc := v2_bytes_encode_in_arena(arena, transmute([]u8)s, &bytes_dst[r_idx], err); rc != .NONE {
-						return rc
-					}
-				}
-			case .BLOB:
-				for r_idx := 0; r_idx < batch_len; r_idx += 1 {
-					row_ptr := cast([^]u8)&rows[batch_start + r_idx]
-					field_ptr := cast(rawptr)&row_ptr[f.offset]
-					if !maybe_field_is_present(field_ptr, f) {
-						if validity_mask == nil {
-							if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE { return rc }
-						}
-						v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
-						continue
-					}
-					b := (cast(^[]u8)field_ptr)^
-					if len(b) > V2_BYTES_INLINE_LENGTH && arena == nil {
-						if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
-							return rc
-						}
-					}
-					if rc := v2_bytes_encode_in_arena(arena, b, &bytes_dst[r_idx], err); rc != .NONE {
-						return rc
-					}
-				}
+			case .BOOLEAN:   rc_col = append_scalar_col(bool, raw, rows, batch_start, batch_len, f, vec, err)
+			case .TINYINT:   rc_col = append_scalar_col(i8, raw, rows, batch_start, batch_len, f, vec, err)
+			case .SMALLINT:  rc_col = append_scalar_col(i16, raw, rows, batch_start, batch_len, f, vec, err)
+			case .INTEGER:   rc_col = append_scalar_col(i32, raw, rows, batch_start, batch_len, f, vec, err)
+			case .BIGINT:    rc_col = append_scalar_col(i64, raw, rows, batch_start, batch_len, f, vec, err)
+			case .UTINYINT:  rc_col = append_scalar_col(u8, raw, rows, batch_start, batch_len, f, vec, err)
+			case .USMALLINT: rc_col = append_scalar_col(u16, raw, rows, batch_start, batch_len, f, vec, err)
+			case .UINTEGER:  rc_col = append_scalar_col(u32, raw, rows, batch_start, batch_len, f, vec, err)
+			case .UBIGINT:   rc_col = append_scalar_col(u64, raw, rows, batch_start, batch_len, f, vec, err)
+			case .FLOAT:     rc_col = append_scalar_col(f32, raw, rows, batch_start, batch_len, f, vec, err)
+			case .DOUBLE:    rc_col = append_scalar_col(f64, raw, rows, batch_start, batch_len, f, vec, err)
+			case .HUGEINT:   rc_col = append_scalar_col(V2_Hugeint, raw, rows, batch_start, batch_len, f, vec, err)
+			case .UHUGEINT:  rc_col = append_scalar_col(V2_Uhugeint, raw, rows, batch_start, batch_len, f, vec, err)
+			case .INTERVAL:  rc_col = append_scalar_col(V2_Interval, raw, rows, batch_start, batch_len, f, vec, err)
+			case .VARCHAR:   rc_col = append_bytes_col(string, raw, rows, batch_start, batch_len, f, vec, err)
+			case .BLOB:      rc_col = append_bytes_col([]u8, raw, rows, batch_start, batch_len, f, vec, err)
+			}
+			if rc_col != .NONE {
+				return rc_col
 			}
 		}
 
@@ -1987,11 +1565,10 @@ append_rows_to_collection :: proc(
 	return .NONE
 }
 
-// Flushes all rows currently buffered in `app.collection` into the target table via a single
-// `duckdb_v2_statement_add_collection` + `duckdb_v2_statement_execute` call, then clears `app.collection`
-// and recreates `app.append_state` so `app` can immediately accept the next wave of batches.
-struct_appender_flush :: proc(
+@(private = "file")
+struct_appender_flush_internal :: proc(
 	app: ^Struct_Appender($T),
+	reset_after_flush: bool,
 	err: ^V2_Error_Info_Handle = nil,
 ) -> V2_Error where intrinsics.type_is_struct(T) {
 	row_cnt: V2_Idx
@@ -2039,6 +1616,10 @@ struct_appender_flush :: proc(
 		return rc
 	}
 
+	if !reset_after_flush {
+		return .NONE
+	}
+
 	if app.append_state != nil {
 		duckdb_v2_column_data_collection_append_state_destroy(&app.append_state)
 	}
@@ -2046,6 +1627,89 @@ struct_appender_flush :: proc(
 		return rc
 	}
 	return duckdb_v2_column_data_collection_append_state_create(app.collection, &app.append_state, err)
+}
+
+// Flushes all rows currently buffered in `app.collection` into the target table via a single
+// `duckdb_v2_statement_add_collection` + `duckdb_v2_statement_execute` call, then clears `app.collection`
+// and recreates `app.append_state` so `app` can immediately accept the next wave of batches.
+struct_appender_flush :: proc(
+	app: ^Struct_Appender($T),
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error where intrinsics.type_is_struct(T) {
+	return struct_appender_flush_internal(app, true, err)
+}
+
+// Shared schema-to-struct column binder used by both `prepared_query_create` and `query_as`.
+@(private = "file")
+bind_schema_to_struct_fields :: proc(
+	schema: V2_Schema_Handle,
+	active_fields: []Struct_Field_Mapping,
+	col_to_field: []int,
+	field_claimed: []bool,
+	caller_label: string,
+	err: ^V2_Error_Info_Handle,
+) -> V2_Error {
+	for i := 0; i < len(col_to_field); i += 1 {
+		col_to_field[i] = -1
+	}
+	schema_cols := V2_Idx(len(col_to_field))
+	for col_idx: V2_Idx = 0; col_idx < schema_cols; col_idx += 1 {
+		col_name_ident: V2_Identifier
+		col_type_handle: V2_Logical_Type_Handle // Borrowed from `schema` (`duckdb_v2.h` line 4720); do NOT destroy.
+		if rc := duckdb_v2_schema_get_field(schema, col_idx, &col_name_ident, &col_type_handle, err); rc != .NONE {
+			return rc
+		}
+		col_type_id: V2_Logical_Type_Id
+		if rc := duckdb_v2_logical_type_get_id(col_type_handle, &col_type_id, err); rc != .NONE {
+			return rc
+		}
+
+		col_name := v2_str_to_string(col_name_ident)
+		matched_field_idx := -1
+		// O(1) positional fast-path when result column `col_idx` matches `active_fields[col_idx]` directly:
+		if int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
+			pf := active_fields[int(col_idx)]
+			if pf.column_name == col_name || pf.field_name == col_name {
+				matched_field_idx = int(col_idx)
+			}
+		}
+		if matched_field_idx < 0 {
+			for f, f_idx in active_fields {
+				if f.column_name == col_name || f.field_name == col_name ||
+				   strings.equal_fold(f.column_name, col_name) || strings.equal_fold(f.field_name, col_name) {
+					matched_field_idx = f_idx
+					break
+				}
+			}
+		}
+		// Positional fallback when result column is unaliased (no name match) and the positional struct field is unclaimed:
+		if matched_field_idx < 0 && int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
+			matched_field_idx = int(col_idx)
+		}
+
+		if matched_field_idx >= 0 {
+			f := active_fields[matched_field_idx]
+			if col_type_id != f.type_id {
+				if err != nil && err^ != nil {
+					msg := v2_str_from_string(
+						fmt.tprintf(
+							"%s column '%s' type mismatch: expected %v, got %v",
+							caller_label,
+							col_name,
+							f.type_id,
+							col_type_id,
+						),
+					)
+					_ = duckdb_v2_error_info_set_code(err^, .INPUT_INVALID)
+					_ = duckdb_v2_error_info_set_text(err^, &msg)
+				}
+				return .INPUT_INVALID
+			}
+			col_to_field[int(col_idx)] = matched_field_idx
+			field_claimed[matched_field_idx] = true
+		}
+	}
+	return .NONE
 }
 
 // Pre-compiled, schema-verified typed query handle (`Prepared_Query(T)`).
@@ -2101,29 +1765,9 @@ prepared_query_create :: proc(
 		return rc
 	}
 
-	raw_fields := reflect.struct_fields_zipped(T)
-	if len(raw_fields) <= len(out_pq.fields_in) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				out_pq.fields_in[n] = m
-				n += 1
-			}
-		}
-		out_pq.active_len = n
-	} else {
-		dyn := make([dynamic]Struct_Field_Mapping, 0, len(raw_fields), allocator)
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				append(&dyn, m)
-			}
-		}
-		out_pq.active_len = len(dyn)
-		out_pq.fields_dyn = dyn[:]
-	}
-	active_fields := prepared_query_fields(out_pq)
+	active_fields, dyn_fields := collect_active_struct_fields(T, &out_pq.fields_in, allocator)
+	out_pq.active_len = len(active_fields)
+	out_pq.fields_dyn = dyn_fields
 
 	stmt: V2_Sql_Statement_Handle
 	if rc := v2_parse_single_stmt(conn, sql, &stmt, err); rc != .NONE || stmt == nil {
@@ -2149,9 +1793,6 @@ prepared_query_create :: proc(
 		out_pq.col_to_field_dyn = make([]int, out_pq.schema_col_count, allocator)
 	}
 	col_to_field := prepared_query_col_map(out_pq)
-	for i := 0; i < out_pq.schema_col_count; i += 1 {
-		col_to_field[i] = -1
-	}
 
 	stack_claimed: [16]bool
 	field_claimed: []bool
@@ -2161,61 +1802,9 @@ prepared_query_create :: proc(
 		field_claimed = make([]bool, out_pq.active_len, context.temp_allocator)
 	}
 
-	for col_idx: V2_Idx = 0; col_idx < schema_cols; col_idx += 1 {
-		col_name_ident: V2_Identifier
-		col_type_handle: V2_Logical_Type_Handle
-		if rc := duckdb_v2_schema_get_field(schema, col_idx, &col_name_ident, &col_type_handle, err); rc != .NONE {
-			prepared_query_destroy(out_pq)
-			return rc
-		}
-		col_type_id: V2_Logical_Type_Id
-		if rc := duckdb_v2_logical_type_get_id(col_type_handle, &col_type_id, err); rc != .NONE {
-			prepared_query_destroy(out_pq)
-			return rc
-		}
-
-		col_name := v2_str_to_string(col_name_ident)
-		matched_field_idx := -1
-		if int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
-			pf := active_fields[int(col_idx)]
-			if pf.column_name == col_name || pf.field_name == col_name {
-				matched_field_idx = int(col_idx)
-			}
-		}
-		if matched_field_idx < 0 {
-			for f, f_idx in active_fields {
-				if f.column_name == col_name || f.field_name == col_name ||
-				   strings.equal_fold(f.column_name, col_name) || strings.equal_fold(f.field_name, col_name) {
-					matched_field_idx = f_idx
-					break
-				}
-			}
-		}
-		if matched_field_idx < 0 && int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
-			matched_field_idx = int(col_idx)
-		}
-
-		if matched_field_idx >= 0 {
-			f := active_fields[matched_field_idx]
-			if col_type_id != f.type_id {
-				if err != nil && err^ != nil {
-					msg := v2_str_from_string(
-						fmt.tprintf(
-							"prepared_query_create column '%s' type mismatch: expected %v, got %v",
-							col_name,
-							f.type_id,
-							col_type_id,
-						),
-					)
-					_ = duckdb_v2_error_info_set_code(err^, .INPUT_INVALID)
-					_ = duckdb_v2_error_info_set_text(err^, &msg)
-				}
-				prepared_query_destroy(out_pq)
-				return .INPUT_INVALID
-			}
-			col_to_field[int(col_idx)] = matched_field_idx
-			field_claimed[matched_field_idx] = true
-		}
+	if rc := bind_schema_to_struct_fields(schema, active_fields, col_to_field, field_claimed, "prepared_query_create", err); rc != .NONE {
+		prepared_query_destroy(out_pq)
+		return rc
 	}
 
 	if rc := duckdb_v2_prepared_statement_create(conn, stmt, require_cacheable, &out_pq.prepared, err); rc != .NONE {
@@ -2252,30 +1841,7 @@ prepared_query_execute_as :: proc(
 ) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
 	out = make([dynamic]T, allocator)
 	res: V2_Result_Handle
-	if len(args) == 0 {
-		rc = duckdb_v2_prepared_statement_execute(pq.prepared, nil, nil, 0, &res, err)
-	} else {
-		stack_vals: [16]V2_Value_Handle
-		vals: []V2_Value_Handle
-		if len(args) <= len(stack_vals) {
-			vals = stack_vals[:len(args)]
-		} else {
-			vals = make([]V2_Value_Handle, len(args), context.temp_allocator)
-		}
-		defer {
-			for &v in vals {
-				if v != nil {
-					duckdb_v2_value_destroy(&v)
-				}
-			}
-		}
-		for a, idx in args {
-			if rc = v2_create_value_from_any(pq.factory, a, &vals[idx], err); rc != .NONE {
-				return out, rc
-			}
-		}
-		rc = duckdb_v2_prepared_statement_execute(pq.prepared, nil, raw_data(vals), V2_Idx(len(vals)), &res, err)
-	}
+	rc = v2_prepared_execute_with_factory(pq.factory, pq.prepared, &res, err, ..args)
 	if rc != .NONE {
 		return out, rc
 	}
@@ -2306,29 +1872,8 @@ query_as :: proc(
 	args: ..any,
 ) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
 	out = make([dynamic]T, allocator)
-	raw_fields := reflect.struct_fields_zipped(T)
 	stack_active: [16]Struct_Field_Mapping = ---
-	active_fields: []Struct_Field_Mapping
-	if len(raw_fields) <= len(stack_active) {
-		n := 0
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				stack_active[n] = m
-				n += 1
-			}
-		}
-		active_fields = stack_active[:n]
-	} else {
-		dyn_active := make([dynamic]Struct_Field_Mapping, 0, len(raw_fields), context.temp_allocator)
-		for rf in raw_fields {
-			m := parse_single_struct_field(rf)
-			if !m.ignored {
-				append(&dyn_active, m)
-			}
-		}
-		active_fields = dyn_active[:]
-	}
+	active_fields, _ := collect_active_struct_fields(T, &stack_active, context.temp_allocator)
 
 	res: V2_Result_Handle
 	rc = v2_query(conn, sql, &res, err, ..args)
@@ -2337,8 +1882,6 @@ query_as :: proc(
 	}
 	defer duckdb_v2_result_destroy(&res)
 
-	// Inspect the result schema to map result column index -> `active_fields` index by column name
-	// and validate runtime `V2_Logical_Type_Id` before casting `view.data`.
 	schema: V2_Schema_Handle
 	rc = duckdb_v2_result_get_schema(res, &schema, err)
 	if rc != .NONE {
@@ -2367,71 +1910,117 @@ query_as :: proc(
 		field_claimed = make([]bool, len(active_fields), context.temp_allocator)
 		views         = make([]V2_Vector_View, int(schema_col_count), context.temp_allocator)
 	}
-	for i := 0; i < int(schema_col_count); i += 1 {
-		col_to_field[i] = -1
-	}
 
-	for col_idx: V2_Idx = 0; col_idx < schema_col_count; col_idx += 1 {
-		col_name_ident: V2_Identifier
-		col_type_handle: V2_Logical_Type_Handle // Borrowed from `schema` (`duckdb_v2.h` line 4720); do NOT destroy.
-		rc = duckdb_v2_schema_get_field(schema, col_idx, &col_name_ident, &col_type_handle, err)
-		if rc != .NONE {
-			return out, rc
-		}
-
-		col_type_id: V2_Logical_Type_Id
-		rc = duckdb_v2_logical_type_get_id(col_type_handle, &col_type_id, err)
-		if rc != .NONE {
-			return out, rc
-		}
-
-		col_name := v2_str_to_string(col_name_ident)
-		matched_field_idx := -1
-		// O(1) positional fast-path when result column `col_idx` matches `active_fields[col_idx]` directly:
-		if int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
-			pf := active_fields[int(col_idx)]
-			if pf.column_name == col_name || pf.field_name == col_name {
-				matched_field_idx = int(col_idx)
-			}
-		}
-		if matched_field_idx < 0 {
-			for f, f_idx in active_fields {
-				if f.column_name == col_name || f.field_name == col_name ||
-				   strings.equal_fold(f.column_name, col_name) || strings.equal_fold(f.field_name, col_name) {
-					matched_field_idx = f_idx
-					break
-				}
-			}
-		}
-
-		// Positional fallback when result column is unaliased (no name match) and the positional struct field is unclaimed:
-		if matched_field_idx < 0 && int(col_idx) < len(active_fields) && !field_claimed[int(col_idx)] {
-			matched_field_idx = int(col_idx)
-		}
-
-		if matched_field_idx >= 0 {
-			f := active_fields[matched_field_idx]
-			if col_type_id != f.type_id {
-				if err != nil && err^ != nil {
-					msg := v2_str_from_string(
-						fmt.tprintf(
-							"query_as column '%s' type mismatch: expected %v, got %v",
-							col_name,
-							f.type_id,
-							col_type_id,
-						),
-					)
-					_ = duckdb_v2_error_info_set_code(err^, .INPUT_INVALID)
-					_ = duckdb_v2_error_info_set_text(err^, &msg)
-				}
-				return out, .INPUT_INVALID
-			}
-			col_to_field[int(col_idx)] = matched_field_idx
-			field_claimed[matched_field_idx] = true
-		}
+	rc = bind_schema_to_struct_fields(schema, active_fields, col_to_field, field_claimed, "query_as", err)
+	if rc != .NONE {
+		return out, rc
 	}
 
 	return unmarshal_result_chunks_with_mapping(&out, res, active_fields, col_to_field, views, allocator, err)
+}
+
+@(private = "file")
+unmarshal_scalar_col :: #force_inline proc(
+	$Col_Type: typeid,
+	view: V2_Vector_View,
+	out: []$Row,
+	base_row, n_rows: int,
+	f: Struct_Field_Mapping,
+) {
+	src := cast([^]Col_Type)view.data
+	if !f.is_maybe && view.validity == nil && view.sel == nil {
+		for r := 0; r < n_rows; r += 1 {
+			item_bytes := cast([^]u8)&out[base_row + r]
+			(cast(^Col_Type)&item_bytes[f.offset])^ = src[r]
+		}
+		return
+	}
+	sel := view.sel
+	val_mask := view.validity
+	for r := 0; r < n_rows; r += 1 {
+		phys := V2_Idx(r) if sel == nil else V2_Idx(sel[r])
+		if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 {
+			continue
+		}
+		item_bytes := cast([^]u8)&out[base_row + r]
+		field_ptr := cast(rawptr)&item_bytes[f.offset]
+		(cast(^Col_Type)field_ptr)^ = src[phys]
+		if f.is_maybe {
+			maybe_field_mark_present(field_ptr, f)
+		}
+	}
+}
+
+@(private = "file")
+unmarshal_bytes_col :: #force_inline proc(
+	$Col_Type: typeid,
+	view: V2_Vector_View,
+	out: []$Row,
+	base_row, n_rows: int,
+	f: Struct_Field_Mapping,
+	allocator: mem.Allocator,
+) {
+	src := cast([^]V2_Bytes)view.data
+	if !f.is_maybe && view.validity == nil && view.sel == nil {
+		total_bytes := 0
+		for r := 0; r < n_rows; r += 1 {
+			total_bytes += int(v2_bytes_length(&src[r]))
+		}
+		if total_bytes > 0 {
+			slab := make([]u8, total_bytes, allocator)
+			offset := 0
+			for r := 0; r < n_rows; r += 1 {
+				item_bytes := cast([^]u8)&out[base_row + r]
+				b_ptr := &src[r]
+				n := int(v2_bytes_length(b_ptr))
+				if n > 0 {
+					dst_slice := slab[offset : offset + n]
+					mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
+					(cast(^Col_Type)&item_bytes[f.offset])^ = string(dst_slice) when Col_Type == string else dst_slice
+					offset += n
+				}
+			}
+		}
+		return
+	}
+	sel := view.sel
+	val_mask := view.validity
+	total_bytes := 0
+	for r := 0; r < n_rows; r += 1 {
+		phys := V2_Idx(r) if sel == nil else V2_Idx(sel[r])
+		if val_mask == nil || (val_mask[phys >> 6] & (u64(1) << (phys & 63))) != 0 {
+			total_bytes += int(v2_bytes_length(&src[phys]))
+		}
+	}
+	nullable_slab: []u8
+	if total_bytes > 0 {
+		nullable_slab = make([]u8, total_bytes, allocator)
+	} else if f.is_maybe && f.maybe_tag_size == 0 {
+		nullable_slab = make([]u8, 1, allocator)
+	}
+	empty_non_nil := string(nullable_slab[:0]) when Col_Type == string else nullable_slab[:0]
+	offset := 0
+	for r := 0; r < n_rows; r += 1 {
+		phys := V2_Idx(r) if sel == nil else V2_Idx(sel[r])
+		if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 {
+			continue
+		}
+		item_bytes := cast([^]u8)&out[base_row + r]
+		field_ptr := cast(rawptr)&item_bytes[f.offset]
+		b_ptr := &src[phys]
+		n := int(v2_bytes_length(b_ptr))
+		if n > 0 {
+			dst_slice := nullable_slab[offset : offset + n]
+			mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
+			(cast(^Col_Type)field_ptr)^ = string(dst_slice) when Col_Type == string else dst_slice
+			offset += n
+		} else {
+			(cast(^Col_Type)field_ptr)^ = empty_non_nil
+		}
+		if f.is_maybe {
+			maybe_field_mark_present(field_ptr, f)
+		}
+	}
 }
 
 @(private = "file")
@@ -2500,146 +2089,6 @@ unmarshal_result_chunks_with_mapping :: proc(
 			f := active_fields[field_idx]
 			view := views[col_idx]
 
-			// Fast path for flat, non-null, non-Maybe, non-JSON columns:
-			if !f.is_maybe && !f.is_json && view.validity == nil && view.sel == nil {
-				#partial switch f.type_id {
-				case .BOOLEAN:
-					src := cast([^]bool)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^bool)&item_bytes[f.offset])^ = src[r]
-					}
-				case .TINYINT:
-					src := cast([^]i8)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^i8)&item_bytes[f.offset])^ = src[r]
-					}
-				case .SMALLINT:
-					src := cast([^]i16)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^i16)&item_bytes[f.offset])^ = src[r]
-					}
-				case .INTEGER:
-					src := cast([^]i32)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^i32)&item_bytes[f.offset])^ = src[r]
-					}
-				case .BIGINT:
-					src := cast([^]i64)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^i64)&item_bytes[f.offset])^ = src[r]
-					}
-				case .UTINYINT:
-					src := cast([^]u8)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^u8)&item_bytes[f.offset])^ = src[r]
-					}
-				case .USMALLINT:
-					src := cast([^]u16)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^u16)&item_bytes[f.offset])^ = src[r]
-					}
-				case .UINTEGER:
-					src := cast([^]u32)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^u32)&item_bytes[f.offset])^ = src[r]
-					}
-				case .UBIGINT:
-					src := cast([^]u64)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^u64)&item_bytes[f.offset])^ = src[r]
-					}
-				case .FLOAT:
-					src := cast([^]f32)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^f32)&item_bytes[f.offset])^ = src[r]
-					}
-				case .DOUBLE:
-					src := cast([^]f64)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^f64)&item_bytes[f.offset])^ = src[r]
-					}
-				case .HUGEINT:
-					src := cast([^]V2_Hugeint)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^V2_Hugeint)&item_bytes[f.offset])^ = src[r]
-					}
-				case .UHUGEINT:
-					src := cast([^]V2_Uhugeint)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^V2_Uhugeint)&item_bytes[f.offset])^ = src[r]
-					}
-				case .INTERVAL:
-					src := cast([^]V2_Interval)view.data
-					for r := 0; r < n_rows; r += 1 {
-						item_bytes := cast([^]u8)&out[base_row + r]
-						(cast(^V2_Interval)&item_bytes[f.offset])^ = src[r]
-					}
-				case .VARCHAR:
-					src := cast([^]V2_Bytes)view.data
-					total_bytes := 0
-					for r := 0; r < n_rows; r += 1 {
-						total_bytes += int(v2_bytes_length(&src[r]))
-					}
-					if total_bytes > 0 {
-						slab := make([]u8, total_bytes, allocator)
-						offset := 0
-						for r := 0; r < n_rows; r += 1 {
-							item_bytes := cast([^]u8)&out[base_row + r]
-							b_ptr := &src[r]
-							n := int(v2_bytes_length(b_ptr))
-							if n > 0 {
-								dst_slice := slab[offset : offset + n]
-								mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
-								(cast(^string)&item_bytes[f.offset])^ = string(dst_slice)
-								offset += n
-							} else {
-								(cast(^string)&item_bytes[f.offset])^ = ""
-							}
-						}
-					} else {
-						for r := 0; r < n_rows; r += 1 {
-							item_bytes := cast([^]u8)&out[base_row + r]
-							(cast(^string)&item_bytes[f.offset])^ = ""
-						}
-					}
-				case .BLOB:
-					src := cast([^]V2_Bytes)view.data
-					total_bytes := 0
-					for r := 0; r < n_rows; r += 1 {
-						total_bytes += int(v2_bytes_length(&src[r]))
-					}
-					if total_bytes > 0 {
-						slab := make([]u8, total_bytes, allocator)
-						offset := 0
-						for r := 0; r < n_rows; r += 1 {
-							item_bytes := cast([^]u8)&out[base_row + r]
-							b_ptr := &src[r]
-							n := int(v2_bytes_length(b_ptr))
-							if n > 0 {
-								dst_slice := slab[offset : offset + n]
-								mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
-								(cast(^[]u8)&item_bytes[f.offset])^ = dst_slice
-								offset += n
-							}
-						}
-					}
-				}
-				continue
-			}
-
 			if f.is_json {
 				for r: V2_Idx = 0; r < row_count; r += 1 {
 					if !v2_row_is_valid(view, r) {
@@ -2665,218 +2114,23 @@ unmarshal_result_chunks_with_mapping :: proc(
 				continue
 			}
 
-			// Hoist `#partial switch f.type_id` outside the row loop for nullable/selection vectors too
-			sel := view.sel
-			val_mask := view.validity
 			#partial switch f.type_id {
-			case .BOOLEAN:
-				src := cast([^]bool)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^bool)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .TINYINT:
-				src := cast([^]i8)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^i8)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .SMALLINT:
-				src := cast([^]i16)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^i16)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .INTEGER:
-				src := cast([^]i32)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^i32)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .BIGINT:
-				src := cast([^]i64)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^i64)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .UTINYINT:
-				src := cast([^]u8)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^u8)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .USMALLINT:
-				src := cast([^]u16)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^u16)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .UINTEGER:
-				src := cast([^]u32)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^u32)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .UBIGINT:
-				src := cast([^]u64)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^u64)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .FLOAT:
-				src := cast([^]f32)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^f32)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .DOUBLE:
-				src := cast([^]f64)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^f64)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .HUGEINT:
-				src := cast([^]V2_Hugeint)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^V2_Hugeint)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .UHUGEINT:
-				src := cast([^]V2_Uhugeint)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^V2_Uhugeint)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-			case .INTERVAL:
-				src := cast([^]V2_Interval)view.data
-				for r: V2_Idx = 0; r < row_count; r += 1 {
-					phys := r if sel == nil else V2_Idx(sel[r])
-					if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-					item_bytes := cast([^]u8)&out[base_row + int(r)]
-					field_ptr := cast(rawptr)&item_bytes[f.offset]
-					(cast(^V2_Interval)field_ptr)^ = src[phys]
-					if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-				}
-				case .VARCHAR:
-					src_bytes := cast([^]V2_Bytes)view.data
-					total_bytes := 0
-					for r: V2_Idx = 0; r < row_count; r += 1 {
-						phys := r if sel == nil else V2_Idx(sel[r])
-						if val_mask == nil || (val_mask[phys >> 6] & (u64(1) << (phys & 63))) != 0 {
-							total_bytes += int(v2_bytes_length(&src_bytes[phys]))
-						}
-					}
-					nullable_str_slab: []u8
-					if total_bytes > 0 {
-						nullable_str_slab = make([]u8, total_bytes, allocator)
-					} else if f.is_maybe && f.maybe_tag_size == 0 {
-						nullable_str_slab = make([]u8, 1, allocator)
-					}
-					empty_non_nil_str := string(nullable_str_slab[:0])
-					nullable_str_offset := 0
-					for r: V2_Idx = 0; r < row_count; r += 1 {
-						phys := r if sel == nil else V2_Idx(sel[r])
-						if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-						item_bytes := cast([^]u8)&out[base_row + int(r)]
-						field_ptr := cast(rawptr)&item_bytes[f.offset]
-						b_ptr := &src_bytes[phys]
-						n := int(v2_bytes_length(b_ptr))
-						if n > 0 {
-							dst_slice := nullable_str_slab[nullable_str_offset : nullable_str_offset + n]
-							mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
-							(cast(^string)field_ptr)^ = string(dst_slice)
-							nullable_str_offset += n
-						} else {
-							(cast(^string)field_ptr)^ = empty_non_nil_str
-						}
-						if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-					}
-				case .BLOB:
-					src_bytes := cast([^]V2_Bytes)view.data
-					total_bytes := 0
-					for r: V2_Idx = 0; r < row_count; r += 1 {
-						phys := r if sel == nil else V2_Idx(sel[r])
-						if val_mask == nil || (val_mask[phys >> 6] & (u64(1) << (phys & 63))) != 0 {
-							total_bytes += int(v2_bytes_length(&src_bytes[phys]))
-						}
-					}
-					nullable_blob_slab: []u8
-					if total_bytes > 0 {
-						nullable_blob_slab = make([]u8, total_bytes, allocator)
-					} else if f.is_maybe && f.maybe_tag_size == 0 {
-						nullable_blob_slab = make([]u8, 1, allocator)
-					}
-					empty_non_nil_blob := nullable_blob_slab[:0]
-					nullable_blob_offset := 0
-					for r: V2_Idx = 0; r < row_count; r += 1 {
-						phys := r if sel == nil else V2_Idx(sel[r])
-						if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 { continue }
-						item_bytes := cast([^]u8)&out[base_row + int(r)]
-						field_ptr := cast(rawptr)&item_bytes[f.offset]
-						b_ptr := &src_bytes[phys]
-						n := int(v2_bytes_length(b_ptr))
-						if n > 0 {
-							dst_slice := nullable_blob_slab[nullable_blob_offset : nullable_blob_offset + n]
-							mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
-							(cast(^[]u8)field_ptr)^ = dst_slice
-							nullable_blob_offset += n
-						} else {
-							(cast(^[]u8)field_ptr)^ = empty_non_nil_blob
-						}
-						if f.is_maybe { maybe_field_mark_present(field_ptr, f) }
-					}
+			case .BOOLEAN:   unmarshal_scalar_col(bool, view, out[:], base_row, n_rows, f)
+			case .TINYINT:   unmarshal_scalar_col(i8, view, out[:], base_row, n_rows, f)
+			case .SMALLINT:  unmarshal_scalar_col(i16, view, out[:], base_row, n_rows, f)
+			case .INTEGER:   unmarshal_scalar_col(i32, view, out[:], base_row, n_rows, f)
+			case .BIGINT:    unmarshal_scalar_col(i64, view, out[:], base_row, n_rows, f)
+			case .UTINYINT:  unmarshal_scalar_col(u8, view, out[:], base_row, n_rows, f)
+			case .USMALLINT: unmarshal_scalar_col(u16, view, out[:], base_row, n_rows, f)
+			case .UINTEGER:  unmarshal_scalar_col(u32, view, out[:], base_row, n_rows, f)
+			case .UBIGINT:   unmarshal_scalar_col(u64, view, out[:], base_row, n_rows, f)
+			case .FLOAT:     unmarshal_scalar_col(f32, view, out[:], base_row, n_rows, f)
+			case .DOUBLE:    unmarshal_scalar_col(f64, view, out[:], base_row, n_rows, f)
+			case .HUGEINT:   unmarshal_scalar_col(V2_Hugeint, view, out[:], base_row, n_rows, f)
+			case .UHUGEINT:  unmarshal_scalar_col(V2_Uhugeint, view, out[:], base_row, n_rows, f)
+			case .INTERVAL:  unmarshal_scalar_col(V2_Interval, view, out[:], base_row, n_rows, f)
+			case .VARCHAR:   unmarshal_bytes_col(string, view, out[:], base_row, n_rows, f, allocator)
+			case .BLOB:      unmarshal_bytes_col([]u8, view, out[:], base_row, n_rows, f, allocator)
 			}
 		}
 	}
