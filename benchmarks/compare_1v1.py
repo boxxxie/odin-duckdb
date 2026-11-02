@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Sophisticated Benchmark Runner, Multi-Run Aggregator & Commit Regression Analyzer
-for odin-duckdb.
+Sophisticated Benchmark Runner, Multi-Run Aggregator, Commit Regression Analyzer &
+Git-Diff Benchmark Impact Mapper for odin-duckdb.
 
 Features:
 - Multi-sample variance tracking (Mean, Median/p50, StdDev, Variance, CV%, Min/Max, IQR, p95, p99)
 - Pools multiple runs associated with the same (commit, lang, benchmark) from JSONL history
 - Commit-vs-Commit regression comparison (--compare-commits <SHA_A> <SHA_B>) with Welch's z-test
+- Git-diff-to-benchmark impact mapping (--plan [REF], --plan-json [REF], --affected [REF])
+- Selective benchmark execution (--groups <csv>, --filter <patterns>)
 - Commit & Run history inspection (--list-commits, --inspect <pattern>)
 """
 
@@ -14,16 +16,28 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH_DIR = os.path.join(ROOT_DIR, "benchmarks")
 ODIN_JSONL = os.path.join(BENCH_DIR, "odin.jsonl")
 HISTORY_JSONL = os.path.join(BENCH_DIR, "history.jsonl")
+
+ALL_GROUPS = [
+    "ingest",
+    "scan",
+    "bytes",
+    "nested",
+    "dsl_codegen",
+    "udf",
+    "point_tx",
+    "vfs_telemetry",
+]
 
 
 def current_git_commit() -> str:
@@ -37,6 +51,333 @@ def current_git_commit() -> str:
         return out if out else "unknown"
     except Exception:
         return "unknown"
+
+
+def resolve_diff_target(ref: Optional[str]) -> Tuple[List[str], str]:
+    """
+    Determines the git diff command and human description.
+    - If `ref` is explicitly given (e.g. 'HEAD~1', 'main', 'a1b2c3d..e4f5g6h'), diffs against that ref.
+    - Otherwise, if the working tree or index has uncommitted changes in `duckdb/` or `benchmarks/`,
+      diffs `HEAD` (working tree + staged).
+    - Otherwise, diffs `HEAD~1..HEAD` (the most recent commit).
+    """
+    if ref and ref != "auto":
+        return ["git", "diff", "--unified=0", ref], f"git diff {ref}"
+
+    try:
+        status_out = subprocess.check_output(
+            ["git", "status", "--porcelain", "--", "duckdb/", "benchmarks/"],
+            cwd=ROOT_DIR,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if status_out:
+            return ["git", "diff", "--unified=0", "HEAD", "--", "duckdb/", "benchmarks/"], "working tree + staged vs HEAD"
+    except Exception:
+        pass
+
+    return ["git", "diff", "--unified=0", "HEAD~1..HEAD", "--", "duckdb/", "benchmarks/"], "latest commit (HEAD~1..HEAD)"
+
+
+def map_changes_to_benchmarks(ref: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Inspects git diff across `duckdb/*.odin` and `benchmarks/bench_main.odin`, extracts modified files
+    and Odin procedure definitions, and maps them to affected benchmark groups and name filters.
+    """
+    diff_cmd, diff_desc = resolve_diff_target(ref)
+    try:
+        diff_text = subprocess.check_output(
+            diff_cmd,
+            cwd=ROOT_DIR,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        diff_text = ""
+
+    changed_files: List[str] = []
+    changed_procs_by_file: Dict[str, Set[str]] = defaultdict(set)
+    current_file: Optional[str] = None
+
+    proc_decl_re = re.compile(r"^\s*([A-Za-z0-9_]+)\s*::\s*proc\b")
+    hunk_proc_re = re.compile(r"@@.*@@\s*([A-Za-z0-9_]+)\s*::\s*proc\b")
+
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = line[6:].strip()
+            if current_file not in changed_files:
+                changed_files.append(current_file)
+        elif line.startswith("@@ ") and current_file:
+            m = hunk_proc_re.search(line)
+            if m:
+                changed_procs_by_file[current_file].add(m.group(1))
+        elif (line.startswith("+") or line.startswith("-")) and not line.startswith("+++") and not line.startswith("---"):
+            if current_file:
+                body = line[1:]
+                m = proc_decl_re.match(body)
+                if m:
+                    changed_procs_by_file[current_file].add(m.group(1))
+
+    groups: Set[str] = set()
+    filters: List[str] = []
+    reasons: List[Dict[str, str]] = []
+    full_suite_reason: Optional[str] = None
+
+    def add_filter(pat: str) -> None:
+        if pat not in filters:
+            filters.append(pat)
+
+    for fpath in changed_files:
+        procs = sorted(changed_procs_by_file.get(fpath, set()))
+        procs_lower = " ".join(procs).lower()
+
+        if fpath == "duckdb/dsl.odin":
+            groups.update(["dsl_codegen", "point_tx"])
+            add_filter("5a.")
+            add_filter("7c.")
+            add_filter("7e.")
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "Query Builder DSL compilation (`query_to_sql`) & DSL execution (`5a`, `7c`, `7e`)",
+            })
+
+        elif fpath == "duckdb/codegen.odin":
+            groups.add("dsl_codegen")
+            add_filter("5b.")
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "Zero-execution schema introspection & Odin/CUE codegen (`5b`)",
+            })
+
+        elif fpath == "duckdb/quack.odin":
+            groups.add("dsl_codegen")
+            if procs and all("sqllogic" in p.lower() for p in procs):
+                add_filter("5c.")
+                impact_desc = "SQLLogicTest script parser (`5c`)"
+            elif procs and not any("sqllogic" in p.lower() for p in procs):
+                add_filter("5f.")
+                impact_desc = "Quack SQL builders, URI normalization & template expansion (`5f`)"
+            else:
+                add_filter("5c.")
+                add_filter("5f.")
+                impact_desc = "SQLLogicTest parser (`5c`) & Quack SQL builders/URI/template (`5f`)"
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": impact_desc,
+            })
+
+        elif fpath == "duckdb/arrow.odin":
+            groups.add("scan")
+            add_filter("2c.")
+            add_filter("2g.")
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "Arrow C Data Interface (`Arrow_Array_Stream` `2c`, `Arrow_Exporter`/`Arrow_Importer` `2g`)",
+            })
+
+        elif fpath == "duckdb/reflect.odin":
+            matched_specific = False
+            if any(k in procs_lower for k in ["create_table_sql", "quote_identifier", "odin_type_to_duckdb"]):
+                groups.add("dsl_codegen")
+                add_filter("5g.")
+                matched_specific = True
+            if any(k in procs_lower for k in ["struct_appender", "append_slice", "append_chunk", "write_struct"]):
+                groups.update(["ingest", "nested"])
+                for pat in ["1c.", "1d.", "1g.", "4a."]:
+                    add_filter(pat)
+                matched_specific = True
+            if any(k in procs_lower for k in ["query_as", "unmarshal", "read_struct", "query_execute_as"]):
+                groups.update(["scan", "nested", "point_tx"])
+                for pat in ["2d.", "2e.", "4a.", "7c."]:
+                    add_filter(pat)
+                matched_specific = True
+            if any(k in procs_lower for k in ["prepared_query", "query_prepare_as"]):
+                groups.add("point_tx")
+                add_filter("7e.")
+                matched_specific = True
+
+            if not matched_specific:
+                groups.update(["ingest", "scan", "nested", "dsl_codegen", "point_tx"])
+                for pat in ["1c.", "1d.", "1g.", "2d.", "2e.", "4a.", "5g.", "7c.", "7e."]:
+                    add_filter(pat)
+
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "Reflection marshaling (`append_slice`, `Struct_Appender`, `query_as`, `create_table_sql`, `Prepared_Query`)",
+            })
+
+        elif fpath == "duckdb/duckdb.odin":
+            groups.add("ingest")
+            add_filter("1b.")
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "Legacy V1 C API & Appender (`1b`)",
+            })
+
+        elif fpath == "duckdb/capi_v2.odin":
+            matched_v2 = False
+            if procs:
+                if any("transaction" in p.lower() for p in procs):
+                    groups.add("point_tx")
+                    add_filter("7d.")
+                    matched_v2 = True
+                if any("step_chunk" in p.lower() for p in procs):
+                    groups.add("scan")
+                    add_filter("2i.")
+                    matched_v2 = True
+                if any("vector_assign_string" in p.lower() or "v2_bytes" in p.lower() for p in procs):
+                    groups.update(["ingest", "scan", "bytes"])
+                    for pat in ["1c.", "1d.", "1g.", "2a.", "2d.", "2e.", "3a.", "3b."]:
+                        add_filter(pat)
+                    matched_v2 = True
+                if any("hugeint" in p.lower() or "uhugeint" in p.lower() or "bignum" in p.lower() or "bit" in p.lower() for p in procs):
+                    groups.add("bytes")
+                    add_filter("3f.")
+                    matched_v2 = True
+
+            if not matched_v2:
+                groups.update(ALL_GROUPS)
+                full_suite_reason = f"Core C API v2 bindings (`{fpath}`) modified across general symbols; full suite recommended"
+
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(module-level)",
+                "impact": "DuckDB 2.0 C API v2 bindings & zero-copy vector/chunk helpers",
+            })
+
+        elif fpath == "benchmarks/bench_main.odin":
+            matched_bench = False
+            for p in procs:
+                pl = p.lower()
+                if "ingest" in pl or "copy_" in pl or "struct_appender" in pl:
+                    groups.add("ingest")
+                    matched_bench = True
+                if "scan" in pl or "arrow" in pl or "query_as" in pl:
+                    groups.add("scan")
+                    matched_bench = True
+                if "v2_bytes" in pl or "vector_" in pl or "128bit" in pl:
+                    groups.add("bytes")
+                    matched_bench = True
+                if "json_tag" in pl or "struct_vector" in pl or "list_vector" in pl or "array_vector" in pl or "composite" in pl:
+                    groups.add("nested")
+                    matched_bench = True
+                if "dsl_query_to_sql" in pl or "schema_introspect" in pl or "sqllogic" in pl or "tokenize_sql" in pl or "describe_table" in pl or "quack" in pl or "ddl_create_table" in pl:
+                    groups.add("dsl_codegen")
+                    matched_bench = True
+                if "udf" in pl or "replacement_scan" in pl or "pragma" in pl or "pushdown" in pl or "cast_ns" in pl:
+                    groups.add("udf")
+                    matched_bench = True
+                if "point_lookup" in pl or "query_execute_as" in pl or "with_transaction" in pl or "prepared_query_execute_as" in pl:
+                    groups.add("point_tx")
+                    matched_bench = True
+                if "vfs" in pl or "query_metrics" in pl or "log_sink" in pl:
+                    groups.add("vfs_telemetry")
+                    matched_bench = True
+            if not matched_bench:
+                groups.update(ALL_GROUPS)
+                full_suite_reason = "Benchmark harness infrastructure modified in `benchmarks/bench_main.odin`"
+            reasons.append({
+                "file": fpath,
+                "procs": ", ".join(procs) or "(harness)",
+                "impact": "Benchmark suite definitions (`benchmarks/bench_main.odin`)",
+            })
+
+    ordered_groups = [g for g in ALL_GROUPS if g in groups]
+    is_full_suite = (len(ordered_groups) == len(ALL_GROUPS)) or (full_suite_reason is not None)
+    if is_full_suite:
+        ordered_groups = list(ALL_GROUPS)
+        filters = []
+
+    known_records = load_jsonl_file(ODIN_JSONL) or load_all_history()
+    seen_names: List[str] = []
+    for r in known_records:
+        nm = r.get("name", "")
+        if nm and nm not in seen_names:
+            seen_names.append(nm)
+
+    matched_tests: List[str] = []
+    if is_full_suite:
+        matched_tests = list(seen_names)
+    elif filters:
+        for nm in seen_names:
+            low = nm.lower()
+            if any(f.lower() in low for f in filters):
+                matched_tests.append(nm)
+    elif ordered_groups:
+        prefix_map = {
+            "ingest": "1",
+            "scan": "2",
+            "bytes": "3",
+            "nested": "4",
+            "dsl_codegen": "5",
+            "udf": "6",
+            "point_tx": "7",
+            "vfs_telemetry": "8",
+        }
+        allowed_prefixes = tuple(prefix_map[g] for g in ordered_groups if g in prefix_map)
+        for nm in seen_names:
+            if nm.startswith(allowed_prefixes):
+                matched_tests.append(nm)
+
+    return {
+        "diff_desc": diff_desc,
+        "changed_files": changed_files,
+        "reasons": reasons,
+        "groups": ordered_groups,
+        "filters": filters,
+        "is_full_suite": is_full_suite,
+        "full_suite_reason": full_suite_reason,
+        "matched_tests": matched_tests,
+        "total_known_tests": len(seen_names),
+    }
+
+
+def print_benchmark_plan(plan: Dict[str, Any]) -> None:
+    print()
+    print("=" * 116)
+    print("  odin-duckdb Code-Change-to-Benchmark Impact Plan")
+    print(f"  Inspected Diff : {plan['diff_desc']}")
+    print("=" * 116)
+
+    if not plan["changed_files"]:
+        print("  No changes detected in `duckdb/` or `benchmarks/`.")
+        print("=" * 116)
+        return
+
+    print("  Modified Files & Procedures:")
+    for r in plan["reasons"]:
+        print(f"    - {r['file']:<28} | Procs: {r['procs']}")
+        print(f"      -> Impact: {r['impact']}")
+
+    print("  " + "-" * 112)
+    if plan["is_full_suite"]:
+        reason_str = f" ({plan['full_suite_reason']})" if plan["full_suite_reason"] else ""
+        print(f"  Selected Scope : FULL SUITE ({len(plan['matched_tests'])}/{plan['total_known_tests']} benchmarks){reason_str}")
+        print("  Command        : ./benchmarks/compare_1v1.py")
+    elif not plan["groups"] and not plan["filters"]:
+        print("  Selected Scope : NONE (only non-benchmark files modified)")
+    else:
+        grp_csv = ",".join(plan["groups"])
+        flt_str = "|".join(plan["filters"])
+        print(f"  Selected Groups: {grp_csv}")
+        if flt_str:
+            print(f"  Name Filter    : {flt_str}")
+        print(f"  Matched Tests  : {len(plan['matched_tests'])} / {plan['total_known_tests']} benchmarks")
+        for idx, nm in enumerate(plan["matched_tests"], 1):
+            print(f"    {idx:>2}. {nm}")
+        cmd_parts = ["./benchmarks/compare_1v1.py", f"--groups {grp_csv}"]
+        if flt_str:
+            cmd_parts.append(f'--filter "{flt_str}"')
+        print("  " + "-" * 112)
+        print(f"  Direct Command : {' '.join(cmd_parts)}")
+        print("  Auto Command   : ./benchmarks/compare_1v1.py --affected")
+    print("=" * 116)
 
 
 def calc_percentile(sorted_vals: List[float], p: float) -> float:
@@ -165,9 +506,6 @@ def pool_by_lang_and_test(
     ]
     if not filtered and commit:
         return []
-    if not commit and filtered:
-        latest_commit = filtered[-1].get("commit", "unknown")
-        filtered = [r for r in filtered if r.get("commit", "unknown") == latest_commit]
 
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     order: List[str] = []
@@ -177,17 +515,27 @@ def pool_by_lang_and_test(
             order.append(name)
         grouped[name].append(r)
 
+    if not commit:
+        for name in order:
+            recs = grouped[name]
+            latest_c = recs[-1].get("commit", "unknown")
+            grouped[name] = [r for r in recs if r.get("commit", "unknown") == latest_c]
+
     pooled = [compute_pooled_stats(grouped[name]) for name in order]
     pooled.sort(key=lambda x: x["rank"])
     return pooled
 
 
-def welch_z_score(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+def welch_se(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     var_a = a["variance_ns2"]
     var_b = b["variance_ns2"]
     n_a = max(a["runs"], 1)
     n_b = max(b["runs"], 1)
-    se = math.sqrt((var_a / n_a) + (var_b / n_b))
+    return math.sqrt((var_a / n_a) + (var_b / n_b))
+
+
+def welch_z_score(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+    se = welch_se(a, b)
     if se < 1e-6:
         return 99.0 if abs(a["mean_ns"] - b["mean_ns"]) >= 0.05 else 0.0
     return abs(a["mean_ns"] - b["mean_ns"]) / se
@@ -208,14 +556,14 @@ def print_pooled_summary(odin_rows: List[Dict[str, Any]]) -> None:
         print("ERROR: No benchmark records found.", file=sys.stderr)
         sys.exit(1)
 
-    o_commit = odin_rows[0]["commit"]
+    o_commit = odin_rows[-1]["commit"]
     o_samples = odin_rows[0]["runs"]
     o_inv = odin_rows[0]["num_invocations"]
 
     print()
     print("=" * 158)
     print(
-        f"  odin-duckdb Pooled Statistical Benchmark Report (-o:speed)\n"
+        f"  odin-duckdb Pooled Statistical Benchmark Report (-o:speed -microarch:native)\n"
         f"  Commit: {o_commit} ({o_samples} samples/test across {o_inv} run(s))"
     )
     print("=" * 158)
@@ -284,8 +632,18 @@ def compare_commits(records: List[Dict[str, Any]], sha_a: str, sha_b: str, lang:
         delta_pct = ((med_b - med_a) / med_a) * 100.0
         speedup = med_a / med_b
         z = welch_z_score(a, b)
+        se = welch_se(a, b)
+        med_z = (abs(med_b - med_a) / se) if se >= 1e-6 else (99.0 if abs(med_b - med_a) >= 0.05 else 0.0)
 
-        is_sig = (z >= 1.96) and (abs(delta_pct) >= 3.0) and (abs(med_b - med_a) >= 0.2)
+        # Require 99% confidence (z >= 2.58 on both mean and median) AND >= 10% relative shift
+        # AND >= 5.0 ns absolute shift (or >= 0.5 ns for sub-50ns tests) to filter out CPU clock drift.
+        abs_thresh = 0.5 if max(med_a, med_b) < 50.0 else 5.0
+        is_sig = (
+            (z >= 2.58)
+            and (med_z >= 2.58)
+            and (abs(delta_pct) >= 10.0)
+            and (abs(med_b - med_a) >= abs_thresh)
+        )
         if is_sig and med_b < med_a:
             verdict = "FASTER"
             faster += 1
@@ -398,6 +756,42 @@ def main() -> None:
     parser.add_argument("--no-history", action="store_true", help="Do not append to benchmarks/history.jsonl")
     parser.add_argument("--from-jsonl", action="store_true", help="Analyze existing JSONL files without re-running binaries")
     parser.add_argument(
+        "--groups",
+        type=str,
+        default=None,
+        help="Comma-separated benchmark groups to run (ingest,scan,bytes,nested,dsl_codegen,udf,point_tx,vfs_telemetry)",
+    )
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=None,
+        help="Pipe- or comma-separated substring patterns matching benchmark names",
+    )
+    parser.add_argument(
+        "--affected",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="GIT_REF",
+        help="Automatically detect modified files/procedures in git diff and run only affected benchmarks",
+    )
+    parser.add_argument(
+        "--plan",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="GIT_REF",
+        help="Dry-run: show which files, procedures, and benchmarks are affected by git diff without executing",
+    )
+    parser.add_argument(
+        "--plan-json",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="GIT_REF",
+        help="Emit the git-diff benchmark impact plan as JSON",
+    )
+    parser.add_argument(
         "--compare-commits",
         nargs=2,
         metavar=("SHA_A", "SHA_B"),
@@ -407,6 +801,16 @@ def main() -> None:
     parser.add_argument("--inspect", type=str, default=None, help="Inspect all runs and sample distributions for matching tests")
 
     args = parser.parse_args()
+
+    if args.plan_json is not None:
+        plan = map_changes_to_benchmarks(args.plan_json)
+        print(json.dumps(plan))
+        return
+
+    if args.plan is not None:
+        plan = map_changes_to_benchmarks(args.plan)
+        print_benchmark_plan(plan)
+        return
 
     if args.list_commits:
         list_commits(load_all_history())
@@ -420,6 +824,21 @@ def main() -> None:
         sha_a, sha_b = args.compare_commits
         compare_commits(load_all_history(), sha_a, sha_b, "odin")
         return
+
+    selected_groups = args.groups
+    selected_filter = args.filter
+
+    if args.affected is not None:
+        plan = map_changes_to_benchmarks(args.affected)
+        print_benchmark_plan(plan)
+        if not plan["changed_files"] or (not plan["groups"] and not plan["filters"] and not plan["is_full_suite"]):
+            print("No benchmark-relevant code changes detected; skipping benchmark execution.")
+            return
+        if not plan["is_full_suite"]:
+            if plan["groups"] and not selected_groups:
+                selected_groups = ",".join(plan["groups"])
+            if plan["filters"] and not selected_filter:
+                selected_filter = "|".join(plan["filters"])
 
     if not args.from_jsonl:
         commit_sha = args.commit or current_git_commit()
@@ -436,6 +855,10 @@ def main() -> None:
             common_flags.append("--append")
         if args.no_history:
             common_flags.append("--no-history")
+        if selected_groups:
+            common_flags.extend(["--groups", selected_groups])
+        if selected_filter:
+            common_flags.extend(["--filter", selected_filter])
 
         run_cmd(
             [

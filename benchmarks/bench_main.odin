@@ -60,6 +60,11 @@ g_append_primary: bool = false
 g_save_history:   bool = true
 g_jsonl_path:     string = "benchmarks/odin.jsonl"
 g_history_path:   string = "benchmarks/history.jsonl"
+g_groups_filter:  string = ""
+g_name_filter:    string = ""
+g_selective_run:  bool = false
+g_existing_lines: map[int]string
+g_updated_lines:  map[int]string
 
 resolve_git_commit :: proc(allocator := context.allocator) -> string {
 	head_bytes, err := os.read_entire_file(".git/HEAD", allocator)
@@ -149,8 +154,111 @@ parse_cli_args :: proc() {
 		} else if (arg == "--history" || arg == "-history") && i + 1 < len(args) {
 			g_history_path = args[i + 1]
 			i += 1
+		} else if (arg == "--groups" || arg == "-groups") && i + 1 < len(args) {
+			g_groups_filter = args[i + 1]
+			g_selective_run = true
+			i += 1
+		} else if strings.has_prefix(arg, "--groups=") || strings.has_prefix(arg, "-groups:") {
+			eq := strings.index_any(arg, "=:")
+			g_groups_filter = arg[eq + 1:]
+			g_selective_run = true
+		} else if (arg == "--filter" || arg == "-filter") && i + 1 < len(args) {
+			g_name_filter = args[i + 1]
+			g_selective_run = true
+			i += 1
+		} else if strings.has_prefix(arg, "--filter=") || strings.has_prefix(arg, "-filter:") {
+			eq := strings.index_any(arg, "=:")
+			g_name_filter = arg[eq + 1:]
+			g_selective_run = true
 		}
 		i += 1
+	}
+}
+
+bench_group_for_name :: proc(name: string) -> string {
+	if len(name) == 0 do return "unknown"
+	switch name[0] {
+	case '1':
+		return "ingest"
+	case '2':
+		return "scan"
+	case '3':
+		return "bytes"
+	case '4':
+		return "nested"
+	case '5':
+		return "dsl_codegen"
+	case '6':
+		return "udf"
+	case '7':
+		return "point_tx"
+	case '8':
+		return "vfs_telemetry"
+	}
+	return "unknown"
+}
+
+should_run_group :: proc(group_name: string) -> bool {
+	if len(g_groups_filter) == 0 || g_groups_filter == "all" {
+		return true
+	}
+	parts := strings.split(g_groups_filter, ",", context.temp_allocator)
+	for p in parts {
+		trimmed := strings.trim_space(p)
+		if strings.equal_fold(trimmed, group_name) || strings.equal_fold(trimmed, "all") {
+			return true
+		}
+		if (trimmed == "1" && group_name == "ingest") ||
+		   (trimmed == "2" && group_name == "scan") ||
+		   (trimmed == "3" && group_name == "bytes") ||
+		   (trimmed == "4" && group_name == "nested") ||
+		   (trimmed == "5" && group_name == "dsl_codegen") ||
+		   (trimmed == "6" && group_name == "udf") ||
+		   (trimmed == "7" && group_name == "point_tx") ||
+		   (trimmed == "8" && group_name == "vfs_telemetry") {
+			return true
+		}
+	}
+	return false
+}
+
+matches_name_filter :: proc(bench_name: string) -> bool {
+	if len(g_name_filter) == 0 {
+		return true
+	}
+	lower_name := strings.to_lower(bench_name, context.temp_allocator)
+	sep := "|" if strings.contains(g_name_filter, "|") else ","
+	parts := strings.split(g_name_filter, sep, context.temp_allocator)
+	for p in parts {
+		pat := strings.to_lower(strings.trim_space(p), context.temp_allocator)
+		if len(pat) > 0 && strings.contains(lower_name, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+load_existing_jsonl_ranks :: proc(path: string) {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil {
+		return
+	}
+	lines := strings.split_lines(string(data), context.allocator)
+	for line in lines {
+		trimmed := strings.trim_space(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		rank_prefix := `{"rank":`
+		if strings.has_prefix(trimmed, rank_prefix) {
+			rest := trimmed[len(rank_prefix):]
+			comma := strings.index_byte(rest, ',')
+			if comma > 0 {
+				if r, r_ok := strconv.parse_int(rest[:comma]); r_ok {
+					g_existing_lines[r] = fmt.aprintf("%s\n", trimmed)
+				}
+			}
+		}
 	}
 }
 
@@ -225,6 +333,9 @@ run_timed :: proc(
 	fn: proc(),
 ) -> Bench_Result {
 	g_bench_rank += 1
+	if !should_run_group(bench_group_for_name(name)) || !matches_name_filter(name) {
+		return Bench_Result{rank = g_bench_rank, name = name}
+	}
 	n := g_runs if g_runs > 0 else clamp(default_iterations, 1, MAX_RUNS)
 
 	for _ in 0 ..< g_warmup {
@@ -345,7 +456,7 @@ print_and_log_result :: proc(r: ^Bench_Result) {
 		)
 	}
 
-	if g_jsonl_file != nil || g_history_file != nil {
+	if g_jsonl_file != nil || g_history_file != nil || (g_selective_run && !g_append_primary) {
 		sb := strings.builder_make(context.temp_allocator)
 		strings.write_byte(&sb, '[')
 		for i in 0 ..< r.runs {
@@ -356,7 +467,7 @@ print_and_log_result :: proc(r: ^Bench_Result) {
 		samples_json := strings.to_string(sb)
 		escaped_name, _ := strings.replace_all(r.name, `"`, `\"`, context.temp_allocator)
 
-		line := fmt.tprintf(
+		line := fmt.aprintf(
 			"{{\"rank\":%d,\"lang\":\"odin\",\"commit\":\"%s\",\"run_id\":\"%s\",\"name\":\"%s\",\"ops\":%d,\"rows\":%d,\"runs\":%d,\"iterations\":%d,\"warmup\":%d,\"total_ms\":%.3f,\"ns_per_op\":%.2f,\"ns_per_item\":%.2f,\"mean_ns\":%.2f,\"median_ns\":%.2f,\"stddev_ns\":%.2f,\"variance_ns2\":%.2f,\"cv_pct\":%.2f,\"min_ns\":%.2f,\"max_ns\":%.2f,\"iqr_ns\":%.2f,\"p95_ns\":%.2f,\"p99_ns\":%.2f,\"ops_per_sec\":%.2f,\"mb_per_sec\":%.2f,\"bytes_row\":%d,\"bytes_used\":%d,\"samples_ns\":%s}}\n",
 			r.rank,
 			g_commit_sha,
@@ -386,7 +497,9 @@ print_and_log_result :: proc(r: ^Bench_Result) {
 			r.bytes_used,
 			samples_json,
 		)
-		if g_jsonl_file != nil {
+		if g_selective_run && !g_append_primary {
+			g_updated_lines[r.rank] = line
+		} else if g_jsonl_file != nil {
 			_, _ = os.write_string(g_jsonl_file, line)
 		}
 		if g_history_file != nil {
@@ -2340,10 +2453,15 @@ bench_struct_appender_microbatches_100k :: proc() {
 
 main :: proc() {
 	parse_cli_args()
-
-	primary_flags := os.File_Flags{.Write, .Create, .Append} if g_append_primary else os.File_Flags{.Write, .Create, .Trunc}
-	if f, err := os.open(g_jsonl_path, primary_flags, os.Permissions_Read_Write_All); err == nil {
-		g_jsonl_file = f
+	g_existing_lines = make(map[int]string)
+	g_updated_lines = make(map[int]string)
+	if g_selective_run && !g_append_primary {
+		load_existing_jsonl_ranks(g_jsonl_path)
+	} else {
+		primary_flags := os.File_Flags{.Write, .Create, .Append} if g_append_primary else os.File_Flags{.Write, .Create, .Trunc}
+		if f, err := os.open(g_jsonl_path, primary_flags, os.Permissions_Read_Write_All); err == nil {
+			g_jsonl_file = f
+		}
 	}
 	defer if g_jsonl_file != nil {
 		os.close(g_jsonl_file)
@@ -2804,4 +2922,21 @@ main :: proc() {
 	append(&results, run_timed("8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops)", 10_000, 0, 5, bench_query_metrics_and_log_sink_10k))
 
 	fmt.println("=========================================================================================================================================================================")
+
+	if g_selective_run && !g_append_primary {
+		if mf, m_err := os.open(g_jsonl_path, {.Write, .Create, .Trunc}, os.Permissions_Read_Write_All); m_err == nil {
+			max_r := g_bench_rank
+			for r_key in g_existing_lines {
+				if r_key > max_r do max_r = r_key
+			}
+			for r := 1; r <= max_r; r += 1 {
+				if upd, ok := g_updated_lines[r]; ok {
+					_, _ = os.write_string(mf, upd)
+				} else if ex, ex_ok := g_existing_lines[r]; ex_ok {
+					_, _ = os.write_string(mf, ex)
+				}
+			}
+			os.close(mf)
+		}
+	}
 }
