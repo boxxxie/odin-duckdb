@@ -365,6 +365,9 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 		q_pq := duckdb.query_from_parquet("s3://bucket/o'reilly/*.parquet")
 		testing.expect_value(t, duckdb.query_to_sql(q_pq), "SELECT * FROM read_parquet('s3://bucket/o''reilly/*.parquet')")
 
+		q_win_pq := duckdb.query_from_parquet(`C:\data\o'reilly\*.parquet`)
+		testing.expect_value(t, duckdb.query_to_sql(q_win_pq), "SELECT * FROM read_parquet('C:/data/o''reilly/*.parquet')")
+
 		// Lakehouse & JSON sources + `SUMMARIZE` & `USING SAMPLE` (`references/elixir/quackdb/test/quack_db/source_test.exs` & `analytics_test.exs`):
 		q_json := duckdb.query_from_json("data/*.ndjson")
 		testing.expect_value(t, duckdb.query_to_sql(q_json), "SELECT * FROM read_json_auto('data/*.ndjson')")

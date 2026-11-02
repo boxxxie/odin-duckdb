@@ -94,6 +94,26 @@ quack_normalize_uri :: proc(endpoint: string, allocator := context.temp_allocato
 	return strings.to_string(b), true
 }
 
+// Normalizes backslashes (`\`) to forward slashes (`/`) and escapes single quotes (`'` -> `''`)
+// for file/glob/certificate paths embedded inside SQL string literals.
+@(private = "package")
+write_sql_escaped_slash_path :: #force_inline proc(b: ^strings.Builder, s: string) {
+	if strings.index_byte(s, '\\') < 0 {
+		write_sql_escaped(b, s)
+		return
+	}
+	for i := 0; i < len(s); i += 1 {
+		c := s[i]
+		if c == '\\' {
+			strings.write_byte(b, '/')
+		} else if c == '\'' {
+			strings.write_string(b, "''")
+		} else {
+			strings.write_byte(b, c)
+		}
+	}
+}
+
 // Builds `SELECT * FROM quack_serve('<endpoint>'[, token='<token>', cert='<cert>', key='<key>'])`.
 quack_serve_sql :: proc(cfg: Quack_Serve_Config, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(0, 96, allocator)
@@ -108,12 +128,12 @@ quack_serve_sql :: proc(cfg: Quack_Serve_Config, allocator := context.temp_alloc
 	}
 	if len(cfg.cert) > 0 {
 		strings.write_string(&b, ", cert='")
-		write_sql_escaped(&b, cfg.cert)
+		write_sql_escaped_slash_path(&b, cfg.cert)
 		strings.write_byte(&b, '\'')
 	}
 	if len(cfg.key) > 0 {
 		strings.write_string(&b, ", key='")
-		write_sql_escaped(&b, cfg.key)
+		write_sql_escaped_slash_path(&b, cfg.key)
 		strings.write_byte(&b, '\'')
 	}
 	strings.write_byte(&b, ')')
@@ -388,6 +408,9 @@ sqllogic_parse_script :: proc(
 
 		if strings.has_prefix(line, "include ") {
 			inc := strings.trim_space(line[len("include "):])
+			if strings.index_byte(inc, '\\') >= 0 {
+				inc, _ = strings.replace_all(inc, "\\", "/", allocator)
+			}
 			append(&directives, Sqllogic_Directive{kind = .INCLUDE, arg = inc})
 			continue
 		}

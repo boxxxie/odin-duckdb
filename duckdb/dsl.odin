@@ -123,7 +123,7 @@ query_from_quack_rpc :: proc(attach_alias: string, remote_sql: string, allocator
 make_fn_call_source :: #force_inline proc(fn_prefix: string, path: string, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(0, len(fn_prefix) + len(path) + 4, allocator)
 	strings.write_string(&b, fn_prefix)
-	write_sql_escaped(&b, path)
+	write_sql_escaped_slash_path(&b, path)
 	strings.write_string(&b, "')")
 	return strings.to_string(b)
 }

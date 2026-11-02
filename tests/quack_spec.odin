@@ -40,6 +40,16 @@ spec_quack_serve_identify_secret_attach_and_rpc_sql_builders :: proc(t: ^testing
 		tls_serve_sql,
 		"SELECT * FROM quack_serve('https://127.0.0.1:9999', token='sec''tok', cert='/tmp/server.crt', key='/tmp/server.key')",
 	)
+	win_tls_serve_sql := duckdb.quack_serve_sql({
+		endpoint = "https://127.0.0.1:9999",
+		cert     = `C:\certs\server.crt`,
+		key      = `C:\certs\server.key`,
+	})
+	testing.expect_value(
+		t,
+		win_tls_serve_sql,
+		"SELECT * FROM quack_serve('https://127.0.0.1:9999', cert='C:/certs/server.crt', key='C:/certs/server.key')",
+	)
 	testing.expect_value(t, duckdb.quack_stop_sql(), "SELECT * FROM quack_stop()")
 	testing.expect_value(t, duckdb.quack_stop_sql("quack:localhost:9999"), "SELECT * FROM quack_stop('quack:localhost:9999')")
 
@@ -222,6 +232,17 @@ missing_quack_table
 			exp_rows := strings.split_lines(d.expected, context.temp_allocator)
 			sqllogic_query_rows(&fx, d.sql, exp_rows)
 		}
+	}
+
+	// 4. Parse CRLF-terminated `.test` scripts and Windows backslash `include` paths cleanly:
+	crlf_script := "include test\\template\\quack_setup.test_template\r\n\r\nstatement ok\r\nSELECT 1\r\nFROM cluster_nodes;\r\n\r\nquery I\r\nSELECT 42;\r\n----\r\n42\r\n"
+	parsed_crlf := duckdb.sqllogic_parse_script(crlf_script, context.temp_allocator)
+	testing.expect_value(t, len(parsed_crlf), 3)
+	if len(parsed_crlf) == 3 {
+		testing.expect_value(t, parsed_crlf[0].kind, duckdb.Sqllogic_Directive_Kind.INCLUDE)
+		testing.expect_value(t, parsed_crlf[0].arg, "test/template/quack_setup.test_template")
+		testing.expect_value(t, parsed_crlf[1].sql, "SELECT 1\nFROM cluster_nodes;")
+		testing.expect_value(t, parsed_crlf[2].expected, "42")
 	}
 }
 
