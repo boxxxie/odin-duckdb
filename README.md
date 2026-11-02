@@ -310,13 +310,13 @@ odin check duckdb -no-entry-point
 # Run the full ATDD executable specification suite
 odin test tests
 
-# Run the throughput & latency benchmark suite (also appends a JSONL snapshot to benchmarks/history.jsonl)
+# Run the throughput & latency benchmark suite (also writes 48 JSONL records to benchmarks/history.jsonl)
 odin run benchmarks -o:speed
 ```
 
 ### Baseline Benchmark Results (`-o:speed`)
 
-Each run of `odin run benchmarks -o:speed` prints the Markdown summary table below and automatically appends a structured JSONL record (`timestamp_unix_ns`, `os`, `arch`, and per-benchmark `median_ns`, `min_ns`, `max_ns`, `ops_per_sec`, `mb_per_sec`, `ns_per_item`) to [`benchmarks/history.jsonl`](benchmarks/history.jsonl) for historical tracking and DuckDB-native querying (`SELECT * FROM read_ndjson_objects('benchmarks/history.jsonl')`).
+Each run of `odin run benchmarks -o:speed` prints the Markdown summary table below and writes 48 newline-delimited JSON records (one JSON object per benchmark with `rank`, `name`, `rows`, `iterations`, `median_ns`, `min_ns`, `max_ns`, `bytes_row`, `ops_per_sec`, `mb_per_sec`, `ns_per_item`) to [`benchmarks/history.jsonl`](benchmarks/history.jsonl) for clean line-by-line Git diffs (`diff=jsonl`) and DuckDB-native querying (`SELECT * FROM 'benchmarks/history.jsonl'`).
 
 | Benchmark | Items / Op | Median Time | Min Time | Throughput (ops/s) | Bandwidth (MB/s) | Latency (ns/item) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
