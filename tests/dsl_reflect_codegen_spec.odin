@@ -508,6 +508,91 @@ spec_layer2_composable_relational_query_builder_and_execution :: proc(t: ^testin
 			testing.expect(t, false, "expected non-nil meta on row 3")
 		}
 	}
+
+	// 8. `query_from_csv`, `query_join` (`INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`), inline-to-dynamic buffer spillover (`> 3` items, `> 1` join, `> 2` params), and all `v2_create_value_from_any` parameter types:
+	q_csv := duckdb.query_from_csv(`C:\data\logs\2026'04\*.csv`)
+	testing.expect_value(t, duckdb.query_to_sql(q_csv), "SELECT * FROM read_csv('C:/data/logs/2026''04/*.csv')")
+
+	// Spillover `Small_Query_Strings` (> 3 items) and `joins_in` (> 1 join):
+	q_spill := duckdb.query_from("t0")
+	duckdb.query_select(&q_spill, "c1", "c2", "c3", "c4", "c5")
+	duckdb.query_exclude(&q_spill, "e1", "e2", "e3", "e4")
+	duckdb.query_replace(&q_spill, "r1 AS c1", "r2 AS c2", "r3 AS c3", "r4 AS c4")
+	duckdb.query_join(&q_spill, .INNER, "t1", "t0.id = t1.id")
+	duckdb.query_join(&q_spill, .LEFT, "t2", "t0.id = t2.id")
+	duckdb.query_join(&q_spill, .RIGHT, "t3", "t0.id = t3.id")
+	duckdb.query_join(&q_spill, .FULL, "t4", "t0.id = t4.id")
+	duckdb.query_join(&q_spill, .CROSS, "t5", "")
+	duckdb.query_order_by(&q_spill, "o1", "o2", "o3", "o4")
+	spill_sql := duckdb.query_to_sql(q_spill)
+	testing.expect(t, strings.contains(spill_sql, "c1, c2, c3, c4, c5 EXCLUDE (e1, e2, e3, e4)"))
+	testing.expect(t, strings.contains(spill_sql, "INNER JOIN t1 ON t0.id = t1.id LEFT JOIN t2 ON t0.id = t2.id RIGHT JOIN t3 ON t0.id = t3.id FULL JOIN t4 ON t0.id = t4.id CROSS JOIN t5"))
+	testing.expect(t, strings.contains(spill_sql, "ORDER BY o1, o2, o3, o4"))
+
+	// Test 1-param inline path and > 2 spilled parameters across all `v2_create_value_from_any` types:
+	Param_Echo :: struct {
+		ok:   bool   `duckdb:"ok"`,
+		sum:  i64    `duckdb:"sum"`,
+		str:  string `duckdb:"str"`,
+		blob: []u8   `duckdb:"blob"`,
+	}
+
+	// 1 inline parameter (`params_len == 1` path in `query_execute_as`):
+	q_inline1 := duckdb.query_from("(SELECT 1)")
+	duckdb.query_select(&q_inline1, "true AS ok", "$1::BIGINT AS sum", "'one' AS str", "'\\xAA'::BLOB AS blob")
+	duckdb.query_bind(&q_inline1, int(42))
+	inline1_rows, inline1_rc := duckdb.query_execute_as(fx.conn, Param_Echo, q_inline1, context.temp_allocator, &fx.err)
+	expect_v2_ok(t, inline1_rc, &fx.err)
+	testing.expect_value(t, len(inline1_rows), 1)
+	if len(inline1_rows) == 1 {
+		testing.expect_value(t, inline1_rows[0].ok, true)
+		testing.expect_value(t, inline1_rows[0].sum, i64(42))
+		testing.expect_value(t, inline1_rows[0].str, "one")
+	}
+
+	// 14 parameters (`> 2` spillover in `query_bind`) covering `bool`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `cstring`, `[]u8`, and `Maybe(i32)(nil)`:
+	Distinct_I16 :: distinct i16
+	Distinct_U32 :: distinct u32
+	Distinct_F32 :: distinct f32
+	Distinct_Bool :: distinct bool
+	q_all_params := duckdb.query_from("(SELECT 1)")
+	duckdb.query_select(
+		&q_all_params,
+		"($1::BOOLEAN AND $14::INTEGER IS NULL) AS ok",
+		"($2::TINYINT + $3::SMALLINT + $4::INTEGER + $5::BIGINT + $6::UTINYINT + $7::USMALLINT + $8::UINTEGER + $9::UBIGINT + $10::FLOAT::BIGINT + $11::DOUBLE::BIGINT)::BIGINT AS sum",
+		"$12::VARCHAR AS str",
+		"$13::BLOB AS blob",
+	)
+	duckdb.query_bind(
+		&q_all_params,
+		Distinct_Bool(true),
+		i8(1),
+		Distinct_I16(2),
+		i32(3),
+		i64(4),
+		u8(5),
+		u16(6),
+		Distinct_U32(7),
+		u64(8),
+		Distinct_F32(9.0),
+		f64(10.0),
+		cstring("cstr_param"),
+		[]u8{0xCA, 0xFE},
+		Maybe(i32)(nil),
+	)
+	all_param_rows, all_param_rc := duckdb.query_execute_as(fx.conn, Param_Echo, q_all_params, context.temp_allocator, &fx.err)
+	expect_v2_ok(t, all_param_rc, &fx.err)
+	testing.expect_value(t, len(all_param_rows), 1)
+	if len(all_param_rows) == 1 {
+		testing.expect_value(t, all_param_rows[0].ok, true)
+		testing.expect_value(t, all_param_rows[0].sum, i64(55))
+		testing.expect_value(t, all_param_rows[0].str, "cstr_param")
+		testing.expect_value(t, len(all_param_rows[0].blob), 2)
+		if len(all_param_rows[0].blob) == 2 {
+			testing.expect_value(t, all_param_rows[0].blob[0], u8(0xCA))
+			testing.expect_value(t, all_param_rows[0].blob[1], u8(0xFE))
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------
