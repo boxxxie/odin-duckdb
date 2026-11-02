@@ -1363,6 +1363,44 @@ struct_appender_append :: proc(
 }
 
 @(private = "file")
+arena_slab_encode_bytes :: #force_inline proc "contextless" (
+	arena: V2_Arena_Handle,
+	slab_ptr: ^[^]u8,
+	slab_rem: ^int,
+	data: []u8,
+	out_bytes: ^V2_Bytes,
+	err: ^V2_Error_Info_Handle = nil,
+) -> V2_Error {
+	n := len(data)
+	if n <= V2_BYTES_INLINE_LENGTH {
+		storage: V2_Bytes
+		storage.inlined.length = u32(n)
+		if n > 0 {
+			intrinsics.mem_copy(&storage.inlined.inlined[0], raw_data(data), n)
+		}
+		out_bytes^ = storage
+		return .NONE
+	}
+	if slab_rem^ < n {
+		alloc_sz := max(n, 8192)
+		if rc := duckdb_v2_arena_allocate(arena, V2_Idx(alloc_sz), slab_ptr, err); rc != .NONE {
+			return rc
+		}
+		slab_rem^ = alloc_sz
+	}
+	bytes_ptr := slab_ptr^
+	slab_ptr^ = bytes_ptr[n:]
+	slab_rem^ -= n
+	intrinsics.mem_copy(bytes_ptr, raw_data(data), n)
+	storage: V2_Bytes
+	storage.pointer.length = u32(n)
+	storage.pointer.ptr = bytes_ptr
+	(cast(^u32)&storage.pointer.prefix[0])^ = (cast(^u32)bytes_ptr)^
+	out_bytes^ = storage
+	return .NONE
+}
+
+@(private = "file")
 append_scalar_col :: #force_inline proc(
 	$Col_Type: typeid,
 	raw: rawptr,
@@ -1381,6 +1419,23 @@ append_scalar_col :: #force_inline proc(
 		return .NONE
 	}
 	validity_mask: [^]u64
+	if f.maybe_tag_size == 1 {
+		tag_row_off := f.offset + f.maybe_tag_offset
+		for r_idx := 0; r_idx < batch_len; r_idx += 1 {
+			row_ptr := cast([^]u8)&rows[batch_start + r_idx]
+			if row_ptr[tag_row_off] == 0 {
+				if validity_mask == nil {
+					if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE {
+						return rc
+					}
+				}
+				v2_validity_set_invalid(validity_mask, V2_Idx(r_idx))
+				continue
+			}
+			dst[r_idx] = (cast(^Col_Type)&row_ptr[f.offset])^
+		}
+		return .NONE
+	}
 	for r_idx := 0; r_idx < batch_len; r_idx += 1 {
 		row_ptr := cast([^]u8)&rows[batch_start + r_idx]
 		field_ptr := cast(rawptr)&row_ptr[f.offset]
@@ -1409,6 +1464,8 @@ append_bytes_col :: #force_inline proc(
 	err: ^V2_Error_Info_Handle,
 ) -> V2_Error {
 	arena: V2_Arena_Handle
+	slab_ptr: [^]u8
+	slab_rem := 0
 	dst := cast([^]V2_Bytes)raw
 	if !f.is_maybe {
 		for r_idx := 0; r_idx < batch_len; r_idx += 1 {
@@ -1420,17 +1477,19 @@ append_bytes_col :: #force_inline proc(
 					return rc
 				}
 			}
-			if rc := v2_bytes_encode_in_arena(arena, raw_bytes, &dst[r_idx], err); rc != .NONE {
+			if rc := arena_slab_encode_bytes(arena, &slab_ptr, &slab_rem, raw_bytes, &dst[r_idx], err); rc != .NONE {
 				return rc
 			}
 		}
 		return .NONE
 	}
 	validity_mask: [^]u64
+	tag_row_off := f.offset + f.maybe_tag_offset
 	for r_idx := 0; r_idx < batch_len; r_idx += 1 {
 		row_ptr := cast([^]u8)&rows[batch_start + r_idx]
 		field_ptr := cast(rawptr)&row_ptr[f.offset]
-		if !maybe_field_is_present(field_ptr, f) {
+		present := (row_ptr[tag_row_off] != 0) if f.maybe_tag_size == 1 else maybe_field_is_present(field_ptr, f)
+		if !present {
 			if validity_mask == nil {
 				if rc := duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_mask, err); rc != .NONE {
 					return rc
@@ -1446,7 +1505,7 @@ append_bytes_col :: #force_inline proc(
 				return rc
 			}
 		}
-		if rc := v2_bytes_encode_in_arena(arena, raw_bytes, &dst[r_idx], err); rc != .NONE {
+		if rc := arena_slab_encode_bytes(arena, &slab_ptr, &slab_rem, raw_bytes, &dst[r_idx], err); rc != .NONE {
 			return rc
 		}
 	}
@@ -1499,6 +1558,8 @@ append_rows_to_collection :: proc(
 				if rc := duckdb_v2_vector_get_arena(vec, &arena, err); rc != .NONE {
 					return rc
 				}
+				slab_ptr: [^]u8
+				slab_rem := 0
 				bytes_dst := cast([^]V2_Bytes)raw
 				json_opt: json.Marshal_Options
 				validity_mask: [^]u64
@@ -1521,7 +1582,7 @@ append_rows_to_collection :: proc(
 							return .TYPE_CONVERSION
 						}
 					}
-					if rc := v2_bytes_encode_in_arena(arena, json_b.buf[:], &bytes_dst[r_idx], err); rc != .NONE {
+					if rc := arena_slab_encode_bytes(arena, &slab_ptr, &slab_rem, json_b.buf[:], &bytes_dst[r_idx], err); rc != .NONE {
 						return rc
 					}
 				}
@@ -1966,8 +2027,42 @@ unmarshal_scalar_col :: #force_inline proc(
 	}
 	sel := view.sel
 	val_mask := view.validity
+	if sel == nil {
+		if f.is_maybe && f.maybe_tag_size == 1 {
+			tag_row_off := f.offset + f.maybe_tag_offset
+			if val_mask == nil {
+				for r := 0; r < n_rows; r += 1 {
+					item_bytes := cast([^]u8)&out[base_row + r]
+					(cast(^Col_Type)&item_bytes[f.offset])^ = src[r]
+					item_bytes[tag_row_off] = 1
+				}
+			} else {
+				for r := 0; r < n_rows; r += 1 {
+					if (val_mask[u64(r) >> 6] & (u64(1) << (u64(r) & 63))) == 0 {
+						continue
+					}
+					item_bytes := cast([^]u8)&out[base_row + r]
+					(cast(^Col_Type)&item_bytes[f.offset])^ = src[r]
+					item_bytes[tag_row_off] = 1
+				}
+			}
+			return
+		}
+		for r := 0; r < n_rows; r += 1 {
+			if val_mask != nil && (val_mask[u64(r) >> 6] & (u64(1) << (u64(r) & 63))) == 0 {
+				continue
+			}
+			item_bytes := cast([^]u8)&out[base_row + r]
+			field_ptr := cast(rawptr)&item_bytes[f.offset]
+			(cast(^Col_Type)field_ptr)^ = src[r]
+			if f.is_maybe {
+				maybe_field_mark_present(field_ptr, f)
+			}
+		}
+		return
+	}
 	for r := 0; r < n_rows; r += 1 {
-		phys := V2_Idx(r) if sel == nil else V2_Idx(sel[r])
+		phys := V2_Idx(sel[r])
 		if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 {
 			continue
 		}
@@ -2007,7 +2102,14 @@ unmarshal_bytes_col :: #force_inline proc(
 					mem.copy(raw_data(dst_slice), v2_bytes_data(b_ptr), n)
 					(cast(^Col_Type)&item_bytes[f.offset])^ = string(dst_slice) when Col_Type == string else dst_slice
 					offset += n
+				} else {
+					(cast(^Col_Type)&item_bytes[f.offset])^ = {}
 				}
+			}
+		} else {
+			for r := 0; r < n_rows; r += 1 {
+				item_bytes := cast([^]u8)&out[base_row + r]
+				(cast(^Col_Type)&item_bytes[f.offset])^ = {}
 			}
 		}
 		return
@@ -2029,6 +2131,7 @@ unmarshal_bytes_col :: #force_inline proc(
 	}
 	empty_non_nil := string(nullable_slab[:0]) when Col_Type == string else nullable_slab[:0]
 	offset := 0
+	tag_row_off := f.offset + f.maybe_tag_offset
 	for r := 0; r < n_rows; r += 1 {
 		phys := V2_Idx(r) if sel == nil else V2_Idx(sel[r])
 		if val_mask != nil && (val_mask[phys >> 6] & (u64(1) << (phys & 63))) == 0 {
@@ -2047,7 +2150,11 @@ unmarshal_bytes_col :: #force_inline proc(
 			(cast(^Col_Type)field_ptr)^ = empty_non_nil
 		}
 		if f.is_maybe {
-			maybe_field_mark_present(field_ptr, f)
+			if f.maybe_tag_size == 1 {
+				item_bytes[tag_row_off] = 1
+			} else {
+				maybe_field_mark_present(field_ptr, f)
+			}
 		}
 	}
 }
@@ -2066,6 +2173,18 @@ unmarshal_result_chunks_with_mapping :: proc(
 	defer out_ptr^ = out
 	col_limit := len(col_to_field)
 
+	total_struct_fields := len(reflect.struct_fields_zipped(T))
+	mapped_non_null_count := 0
+	if len(active_fields) == total_struct_fields {
+		for col_idx := 0; col_idx < col_limit; col_idx += 1 {
+			f_idx := col_to_field[col_idx]
+			if f_idx >= 0 && !active_fields[f_idx].is_maybe && !active_fields[f_idx].is_json {
+				mapped_non_null_count += 1
+			}
+		}
+	}
+	all_fields_mapped_plain := (mapped_non_null_count == total_struct_fields && total_struct_fields > 0)
+
 	for {
 		chunk: V2_Data_Chunk_Handle
 		rc = duckdb_v2_result_fetch_chunk(res, &chunk, err)
@@ -2083,6 +2202,7 @@ unmarshal_result_chunks_with_mapping :: proc(
 			return out, rc
 		}
 
+		any_null_view := false
 		for col_idx := 0; col_idx < col_limit; col_idx += 1 {
 			if col_to_field[col_idx] < 0 {
 				continue
@@ -2096,6 +2216,9 @@ unmarshal_result_chunks_with_mapping :: proc(
 			if rc != .NONE {
 				return out, rc
 			}
+			if views[col_idx].validity != nil {
+				any_null_view = true
+			}
 		}
 
 		base_row := len(out)
@@ -2106,7 +2229,9 @@ unmarshal_result_chunks_with_mapping :: proc(
 		}
 		#no_bounds_check {
 			(^mem.Raw_Dynamic_Array)(&out).len = base_row + n_rows
-			mem.zero_slice(out[base_row : base_row + n_rows])
+			if !all_fields_mapped_plain || any_null_view {
+				mem.zero_slice(out[base_row : base_row + n_rows])
+			}
 		}
 
 		// Column-major unmarshaling: switch on column type once per chunk instead of per row.

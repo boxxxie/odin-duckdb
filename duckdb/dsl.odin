@@ -15,6 +15,7 @@ package duckdb
 // ============================================================================
 
 import "base:intrinsics"
+import "core:mem"
 import "core:strings"
 
 Join_Kind :: enum {
@@ -43,7 +44,7 @@ Small_Buffer :: struct($N: int, $T: typeid) {
 
 Small_Query_Strings :: Small_Buffer(3, string)
 
-sb_len :: #force_inline proc(b: Small_Buffer($N, $T)) -> int {
+sb_len :: #force_inline proc(#by_ptr b: Small_Buffer($N, $T)) -> int {
 	return len(b.dyn) if len(b.dyn) > 0 else b.len
 }
 
@@ -51,7 +52,7 @@ sb_slice :: #force_inline proc(b: ^Small_Buffer($N, $T)) -> []T {
 	return b.dyn[:] if len(b.dyn) > 0 else b.inline[:b.len]
 }
 
-sb_append :: #force_inline proc(b: ^Small_Buffer($N, $T), items: ..T) {
+sb_append :: #force_inline proc(b: ^Small_Buffer($N, $T), allocator: mem.Allocator, items: ..T) {
 	if len(b.dyn) == 0 && b.len + len(items) <= N {
 		for it, i in items {
 			b.inline[b.len + i] = it
@@ -60,6 +61,7 @@ sb_append :: #force_inline proc(b: ^Small_Buffer($N, $T), items: ..T) {
 		return
 	}
 	if len(b.dyn) == 0 {
+		b.dyn.allocator = allocator
 		reserve(&b.dyn, b.len + len(items) + 4)
 		append(&b.dyn, ..b.inline[:b.len])
 	}
@@ -90,14 +92,7 @@ query_from :: proc(table: string, allocator := context.temp_allocator) -> Query 
 		limit_val  = -1,
 		offset_val = -1,
 	}
-	q.projections.dyn.allocator = allocator
-	q.excludes.dyn.allocator    = allocator
-	q.replaces.dyn.allocator    = allocator
-	q.joins.dyn.allocator       = allocator
-	q.where_exprs.dyn.allocator = allocator
-	q.group_by.allocator        = allocator
-	q.order_by.dyn.allocator    = allocator
-	q.params.dyn.allocator      = allocator
+	q.group_by.allocator = allocator
 	return q
 }
 
@@ -156,22 +151,22 @@ query_from_delta :: proc(path: string, allocator := context.temp_allocator) -> Q
 }
 
 query_select :: proc(q: ^Query, cols: ..string) -> ^Query {
-	sb_append(&q.projections, ..cols)
+	sb_append(&q.projections, q.group_by.allocator, ..cols)
 	return q
 }
 
 query_exclude :: proc(q: ^Query, cols: ..string) -> ^Query {
-	sb_append(&q.excludes, ..cols)
+	sb_append(&q.excludes, q.group_by.allocator, ..cols)
 	return q
 }
 
 query_replace :: proc(q: ^Query, exprs: ..string) -> ^Query {
-	sb_append(&q.replaces, ..exprs)
+	sb_append(&q.replaces, q.group_by.allocator, ..exprs)
 	return q
 }
 
 query_where :: proc(q: ^Query, expr: string) -> ^Query {
-	sb_append(&q.where_exprs, expr)
+	sb_append(&q.where_exprs, q.group_by.allocator, expr)
 	return q
 }
 
@@ -180,24 +175,24 @@ query_where :: proc(q: ^Query, expr: string) -> ^Query {
 query_bind :: proc(q: ^Query, args: ..any) -> ^Query {
 	for a in args {
 		qp, _ := v2_box_query_param(a)
-		sb_append(&q.params, qp)
+		sb_append(&q.params, q.group_by.allocator, qp)
 	}
 	return q
 }
 
 query_where_bind :: proc(q: ^Query, expr: string, args: ..any) -> ^Query {
-	sb_append(&q.where_exprs, expr)
+	sb_append(&q.where_exprs, q.group_by.allocator, expr)
 	query_bind(q, ..args)
 	return q
 }
 
 query_join :: proc(q: ^Query, kind: Join_Kind, target: string, on_expr: string) -> ^Query {
-	sb_append(&q.joins, Query_Join{kind = kind, target = target, on_expr = on_expr})
+	sb_append(&q.joins, q.group_by.allocator, Query_Join{kind = kind, target = target, on_expr = on_expr})
 	return q
 }
 
 query_asof_join :: proc(q: ^Query, target: string, on_expr: string, using_col := "") -> ^Query {
-	sb_append(&q.joins, Query_Join{kind = .ASOF, target = target, on_expr = on_expr, using_col = using_col})
+	sb_append(&q.joins, q.group_by.allocator, Query_Join{kind = .ASOF, target = target, on_expr = on_expr, using_col = using_col})
 	return q
 }
 
@@ -212,7 +207,7 @@ query_qualify :: proc(q: ^Query, window_predicate: string) -> ^Query {
 }
 
 query_order_by :: proc(q: ^Query, exprs: ..string) -> ^Query {
-	sb_append(&q.order_by, ..exprs)
+	sb_append(&q.order_by, q.group_by.allocator, ..exprs)
 	return q
 }
 
@@ -233,12 +228,21 @@ query_sample :: proc(q: ^Query, sample_spec: string) -> ^Query {
 }
 
 @(private = "file")
-write_sb_strings_sep :: #force_inline proc(b: ^strings.Builder, s: ^Small_Buffer($N, string), sep: string) {
-	for item, i in sb_slice(s) {
+write_sb_strings_sep :: #force_inline proc(b: ^strings.Builder, #by_ptr s: Small_Buffer($N, string), sep: string) {
+	if len(s.dyn) > 0 {
+		for item, i in s.dyn {
+			if i > 0 {
+				strings.write_string(b, sep)
+			}
+			strings.write_string(b, item)
+		}
+		return
+	}
+	for i := 0; i < s.len; i += 1 {
 		if i > 0 {
 			strings.write_string(b, sep)
 		}
-		strings.write_string(b, item)
+		strings.write_string(b, s.inline[i])
 	}
 }
 
@@ -282,47 +286,52 @@ write_single_join :: #force_inline proc(b: ^strings.Builder, j: Query_Join) {
 }
 
 // Compiles a `Query` AST into a DuckDB 2.0 Friendly SQL string.
-query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
-	q_mut := q
+query_to_sql :: proc(#by_ptr q: Query, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(0, 192, allocator)
-	if q_mut.summarize {
+	if q.summarize {
 		strings.write_string(&b, "SUMMARIZE ")
 	}
 	strings.write_string(&b, "SELECT ")
 
-	if sb_len(q_mut.projections) == 0 {
+	if sb_len(q.projections) == 0 {
 		strings.write_byte(&b, '*')
 	} else {
-		write_sb_strings_sep(&b, &q_mut.projections, ", ")
+		write_sb_strings_sep(&b, q.projections, ", ")
 	}
-	if sb_len(q_mut.excludes) > 0 {
+	if sb_len(q.excludes) > 0 {
 		strings.write_string(&b, " EXCLUDE (")
-		write_sb_strings_sep(&b, &q_mut.excludes, ", ")
+		write_sb_strings_sep(&b, q.excludes, ", ")
 		strings.write_byte(&b, ')')
 	}
-	if sb_len(q_mut.replaces) > 0 {
+	if sb_len(q.replaces) > 0 {
 		strings.write_string(&b, " REPLACE (")
-		write_sb_strings_sep(&b, &q_mut.replaces, ", ")
+		write_sb_strings_sep(&b, q.replaces, ", ")
 		strings.write_byte(&b, ')')
 	}
 
 	strings.write_string(&b, " FROM ")
-	strings.write_string(&b, q_mut.source)
+	strings.write_string(&b, q.source)
 
-	for j in sb_slice(&q_mut.joins) {
-		write_single_join(&b, j)
+	if len(q.joins.dyn) > 0 {
+		for j in q.joins.dyn {
+			write_single_join(&b, j)
+		}
+	} else {
+		for i := 0; i < q.joins.len; i += 1 {
+			write_single_join(&b, q.joins.inline[i])
+		}
 	}
 
-	if sb_len(q_mut.where_exprs) > 0 {
+	if sb_len(q.where_exprs) > 0 {
 		strings.write_string(&b, " WHERE ")
-		write_sb_strings_sep(&b, &q_mut.where_exprs, " AND ")
+		write_sb_strings_sep(&b, q.where_exprs, " AND ")
 	}
 
-	if q_mut.group_by_all {
+	if q.group_by_all {
 		strings.write_string(&b, " GROUP BY ALL")
-	} else if len(q_mut.group_by) > 0 {
+	} else if len(q.group_by) > 0 {
 		strings.write_string(&b, " GROUP BY ")
-		for g, i in q_mut.group_by {
+		for g, i in q.group_by {
 			if i > 0 {
 				strings.write_string(&b, ", ")
 			}
@@ -330,28 +339,28 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 		}
 	}
 
-	if len(q_mut.qualify_expr) > 0 {
+	if len(q.qualify_expr) > 0 {
 		strings.write_string(&b, " QUALIFY ")
-		strings.write_string(&b, q_mut.qualify_expr)
+		strings.write_string(&b, q.qualify_expr)
 	}
 
-	if sb_len(q_mut.order_by) > 0 {
+	if sb_len(q.order_by) > 0 {
 		strings.write_string(&b, " ORDER BY ")
-		write_sb_strings_sep(&b, &q_mut.order_by, ", ")
+		write_sb_strings_sep(&b, q.order_by, ", ")
 	}
 
-	if len(q_mut.sample_spec) > 0 {
+	if len(q.sample_spec) > 0 {
 		strings.write_string(&b, " USING SAMPLE ")
-		strings.write_string(&b, q_mut.sample_spec)
+		strings.write_string(&b, q.sample_spec)
 	}
 
-	if q_mut.limit_val >= 0 {
+	if q.limit_val >= 0 {
 		strings.write_string(&b, " LIMIT ")
-		strings.write_int(&b, q_mut.limit_val)
+		strings.write_int(&b, q.limit_val)
 	}
-	if q_mut.offset_val >= 0 {
+	if q.offset_val >= 0 {
 		strings.write_string(&b, " OFFSET ")
-		strings.write_int(&b, q_mut.offset_val)
+		strings.write_int(&b, q.offset_val)
 	}
 
 	return strings.to_string(b)
@@ -361,13 +370,16 @@ query_to_sql :: proc(q: Query, allocator := context.temp_allocator) -> string {
 query_execute_as :: proc(
 	conn: V2_Connection_Handle,
 	$T: typeid,
-	q: Query,
+	#by_ptr q: Query,
 	allocator := context.allocator,
 	err: ^V2_Error_Info_Handle = nil,
 ) -> (out: [dynamic]T, rc: V2_Error) where intrinsics.type_is_struct(T) {
-	q_mut := q
-	sql := query_to_sql(q_mut, context.temp_allocator)
-	return query_as_with_params(conn, T, sql, sb_slice(&q_mut.params), allocator, err)
+	sql := query_to_sql(q, context.temp_allocator)
+	if len(q.params.dyn) > 0 {
+		return query_as_with_params(conn, T, sql, q.params.dyn[:], allocator, err)
+	}
+	params_in := q.params.inline
+	return query_as_with_params(conn, T, sql, params_in[:q.params.len], allocator, err)
 }
 
 // Compiles `q` to SQL, binds & validates its result schema against `$T`, and prepares a reusable
@@ -375,7 +387,7 @@ query_execute_as :: proc(
 query_prepare_as :: proc(
 	conn: V2_Connection_Handle,
 	$T: typeid,
-	q: Query,
+	#by_ptr q: Query,
 	out_pq: ^Prepared_Query(T),
 	require_cacheable: bool = false,
 	allocator := context.allocator,
