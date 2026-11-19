@@ -335,140 +335,140 @@ duckdb -markdown -light-mode -f benchmarks/query_hugidb.sql
 `hugi run benchmarks` captures exact integer batch nanosecond samples (`HPKT` packets) and stores pooled multi-commit history in [`benchmarks/history.hugidb`](benchmarks/history.hugidb) alongside legacy JSONL logs ([`benchmarks/odin.jsonl`](benchmarks/odin.jsonl), [`benchmarks/history.jsonl`](benchmarks/history.jsonl)). Use `hugi compare --last` for Welch `t`-test / Mann-Whitney U regression analysis, [`./benchmarks/update_readme.sh`](benchmarks/update_readme.sh) to regenerate the latency-tiered bandwidth tables below, and [`benchmarks/query_hugidb.sql`](benchmarks/query_hugidb.sql) to query exported Parquet histories (`DECIMAL(18,6)` timings) directly in DuckDB. See [`benchmarks/README.md`](benchmarks/README.md) for full details.
 
 <!-- BEGIN_BENCHMARK_TABLE -->
-### 1. Latest Code-Change Impact & Affected Benchmarks (`9ec3509e84e6` → `6a128a2f8c8a`)
+### 1. Latest Code-Change Impact & Affected Benchmarks (`6a128a2f8c8a` → `eed3bbe02f72`)
 
-> **Benchmark Scope:** `9ec3509e84e6` → `6a128a2f8c8a` (48 / 48 benchmarks compared)
+> **Benchmark Scope:** `6a128a2f8c8a` → `eed3bbe02f72` (48 / 48 benchmarks compared)
 
-#### 1.1 Vectorized Zero-Copy Scans, UDFs & Wire Codecs (`ns`, 23 tests)
+#### 1.1 Vectorized Zero-Copy Scans, UDFs & Wire Codecs (`ns`, 24 tests)
 
-| # | Benchmark | Verdict | Delta | Speedup | Base `9ec3509` (`ns`) | Curr `6a128a2` (`ns`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
+| # | Benchmark | Verdict | Delta | Speedup | Base `6a128a2` (`ns`) | Curr `eed3bbe` (`ns`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
 | ---: | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 5 | `1e. Ingest: Custom V2_Copy_Function COPY ... FROM (1M rows)` | `~NOISE` | `+45.3%` | 0.69x | 14.7 | **21.4** | `1.1` | 15.4 ± 8.6 | 20.9 ± 7.6 |
-| 6 | `1f. Export: Custom V2_Copy_Function COPY ... TO Sink (1M rows)` | `~NOISE` | `-3.5%` | 1.04x | 3.1 | **3.0** | `0.4` | 3.2 ± 0.4 | 3.3 ± 0.5 |
-| 8 | `2a. Scan: Zero-Copy V2_Vector_View Flat (1M rows)` | `~NOISE` | `+28.9%` | 0.78x | 4.9 | **6.3** | `2.4` | 5.0 ± 0.9 | 6.2 ± 0.7 |
-| 9 | `2b. Scan: Zero-Copy V2_Selection_Vector Filtered (1M source rows)` | **REGRESSION** | `+31.4%` | 0.76x | 3.4 | **4.4** | `3.7` | 3.5 ± 0.4 | 4.4 ± 0.5 |
-| 10 | `2c. Scan: Arrow C Data Interface Arrow_Array_Stream (1M rows)` | **REGRESSION** | `+24.3%` | 0.80x | 5.4 | **6.8** | `3.0` | 5.6 ± 0.9 | 7.1 ± 0.8 |
-| 13 | `2f. Scan: Direct ColumnDataCollection Worker Scan (1M rows)` | `~NOISE` | `+39.4%` | 0.72x | 0.7 | **1.0** | `3.5` | 0.8 ± 0.1 | 1.0 ± 0.1 |
-| 14 | `2g. Bridge: Arrow_Exporter -> Arrow_Importer Round-Trip (200K)` | **REGRESSION** | `+59.3%` | 0.63x | 3.2 | **5.2** | `4.1` | 3.8 ± 0.9 | 5.2 ± 0.2 |
-| 15 | `2h. Scan: Multi-Worker ColumnDataCollection 4-Thread Scan (1M)` | `~NOISE` | `+20.5%` | 0.83x | 0.4 | **0.4** | `1.1` | 0.4 ± 0.1 | 0.5 ± 0.1 |
-| 16 | `2i. Scan: Cooperative Stepper v2_step_chunk (1M rows)` | **REGRESSION** | `+19.9%` | 0.83x | 4.9 | **5.8** | `4.2` | 4.9 ± 0.4 | 6.2 ± 0.6 |
-| 17 | `3a. V2_Bytes Write: Inline <= 12 B (v2_vector_assign_string, 200K)` | **REGRESSION** | `+63.6%` | 0.61x | 4.2 | **6.9** | `11.2` | 4.5 ± 0.4 | 7.0 ± 0.4 |
-| 18 | `3b. V2_Bytes Write: Arena > 12 B (v2_vector_assign_string, 200K)` | **REGRESSION** | `+56.9%` | 0.64x | 14.0 | **21.9** | `118.9` | 14.0 ± 0.1 | 21.9 ± 0.1 |
-| 19 | `3c. Vector Cast: duckdb_v2_vector_cast BIGINT -> DOUBLE (200K)` | `~NOISE` | `+65.0%` | 0.61x | 0.3 | **0.5** | `28.4` | 0.3 ± 0.0 | 0.5 ± 0.0 |
-| 20 | `3d. Zero-Copy Alias: duckdb_v2_vector_reference (200K rows)` | `~NOISE` | `+0.0%` | 1.00x | 0.0 | **0.0** | `0.5` | 0.0 ± 0.0 | 0.0 ± 0.0 |
-| 21 | `3e. Vector Flatten: .OTHER (MakeSequence) -> .FLAT (1M rows)` | `~NOISE` | `+61.6%` | 0.62x | 0.2 | **0.4** | `64.5` | 0.2 ± 0.0 | 0.4 ± 0.0 |
-| 22 | `3f. Wire Codec: 128-Bit HUGEINT/INTERVAL/BIT/BIGNUM (200K)` | **REGRESSION** | `+62.2%` | 0.62x | 1.2 | **1.9** | `89.9` | 1.2 ± 0.0 | 1.9 ± 0.0 |
-| 24 | `4b. Native STRUCT(...) Child Vector Write+Read (200K structs)` | `~NOISE` | `+26.9%` | 0.79x | 0.7 | **0.9** | `6.4` | 0.7 ± 0.1 | 0.9 ± 0.0 |
-| 25 | `4c. Nested LIST(BIGINT) Vector Write+Read (200K lists / 800K items)` | `~NOISE` | `+63.4%` | 0.61x | 0.7 | **1.2** | `18.6` | 0.8 ± 0.1 | 1.2 ± 0.0 |
-| 26 | `4d. Fixed ARRAY(DOUBLE, 4) Vector Write+Read (200K arrays / 800K f64)` | `~NOISE` | `+67.1%` | 0.60x | 0.5 | **0.9** | `14.7` | 0.5 ± 0.0 | 0.9 ± 0.1 |
-| 35 | `6a. UDF: Vectorized Scalar Callback odin_fma (1M rows)` | `~NOISE` | `+36.5%` | 0.73x | 1.1 | **1.5** | `2.6` | 1.2 ± 0.2 | 1.5 ± 0.2 |
-| 36 | `6b. UDF: Streaming Table Function odin_gen_series (1M rows)` | **REGRESSION** | `+51.8%` | 0.66x | 2.7 | **4.2** | `14.0` | 2.7 ± 0.3 | 4.1 ± 0.0 |
-| 37 | `6c. UDF: Grouped Hash Aggregate odin_agg_sum (1M rows)` | `~NOISE` | `+17.4%` | 0.85x | 2.4 | **2.8** | `1.5` | 2.4 ± 0.5 | 2.8 ± 0.3 |
-| 38 | `6d. UDF: Table Function Projection + Filter Pushdown (1M rows)` | `~NOISE` | `+57.1%` | 0.64x | 0.5 | **0.8** | `19.1` | 0.5 ± 0.0 | 0.7 ± 0.0 |
-| 39 | `6e. UDF: Custom Type & Vectorized V2_Cast_Function (1M rows)` | `~NOISE` | `+44.3%` | 0.69x | 0.8 | **1.1** | `11.0` | 0.8 ± 0.1 | 1.1 ± 0.0 |
+| 5 | `1e. Ingest: Custom V2_Copy_Function COPY ... FROM (1M rows)` | **FASTER** | `-61.1%` | 2.57x | 21.4 | **8.3** | `2.7` | 20.9 ± 7.6 | 11.2 ± 3.8 |
+| 6 | `1f. Export: Custom V2_Copy_Function COPY ... TO Sink (1M rows)` | `~NOISE` | `+9.0%` | 0.92x | 3.0 | **3.2** | `0.8` | 3.3 ± 0.5 | 3.0 ± 0.5 |
+| 8 | `2a. Scan: Zero-Copy V2_Vector_View Flat (1M rows)` | `~NOISE` | `-8.5%` | 1.09x | 6.3 | **5.8** | `0.9` | 6.2 ± 0.7 | 5.8 ± 0.7 |
+| 9 | `2b. Scan: Zero-Copy V2_Selection_Vector Filtered (1M source rows)` | **FASTER** | `-13.9%` | 1.16x | 4.4 | **3.8** | `3.0` | 4.4 ± 0.5 | 3.8 ± 0.2 |
+| 10 | `2c. Scan: Arrow C Data Interface Arrow_Array_Stream (1M rows)` | `~NOISE` | `-13.8%` | 1.16x | 6.8 | **5.8** | `3.7` | 7.1 ± 0.8 | 5.5 ± 0.6 |
+| 13 | `2f. Scan: Direct ColumnDataCollection Worker Scan (1M rows)` | `~NOISE` | `+2.8%` | 0.97x | 1.0 | **1.0** | `0.5` | 1.0 ± 0.1 | 1.1 ± 0.2 |
+| 14 | `2g. Bridge: Arrow_Exporter -> Arrow_Importer Round-Trip (200K)` | **FASTER** | `-26.2%` | 1.35x | 5.2 | **3.8** | `10.3` | 5.2 ± 0.2 | 3.8 ± 0.2 |
+| 15 | `2h. Scan: Multi-Worker ColumnDataCollection 4-Thread Scan (1M)` | `~NOISE` | `-16.3%` | 1.19x | 0.4 | **0.4** | `0.5` | 0.5 ± 0.1 | 0.4 ± 0.1 |
+| 16 | `2i. Scan: Cooperative Stepper v2_step_chunk (1M rows)` | **FASTER** | `-15.7%` | 1.19x | 5.8 | **4.9** | `3.3` | 6.2 ± 0.6 | 5.1 ± 0.6 |
+| 17 | `3a. V2_Bytes Write: Inline <= 12 B (v2_vector_assign_string, 200K)` | **FASTER** | `-30.9%` | 1.45x | 6.9 | **4.8** | `12.6` | 7.0 ± 0.4 | 4.7 ± 0.2 |
+| 18 | `3b. V2_Bytes Write: Arena > 12 B (v2_vector_assign_string, 200K)` | **FASTER** | `-36.3%` | 1.57x | 21.9 | **14.0** | `11.2` | 21.9 ± 0.1 | 14.6 ± 1.7 |
+| 19 | `3c. Vector Cast: duckdb_v2_vector_cast BIGINT -> DOUBLE (200K)` | `~NOISE` | `-37.5%` | 1.60x | 0.5 | **0.3** | `32.9` | 0.5 ± 0.0 | 0.3 ± 0.0 |
+| 20 | `3d. Zero-Copy Alias: duckdb_v2_vector_reference (200K rows)` | `~NOISE` | `+0.0%` | 0.99x | 0.0 | **0.0** | `10.0` | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| 21 | `3e. Vector Flatten: .OTHER (MakeSequence) -> .FLAT (1M rows)` | `~NOISE` | `-36.1%` | 1.57x | 0.4 | **0.2** | `101.4` | 0.4 ± 0.0 | 0.2 ± 0.0 |
+| 22 | `3f. Wire Codec: 128-Bit HUGEINT/INTERVAL/BIT/BIGNUM (200K)` | **FASTER** | `-37.7%` | 1.61x | 1.9 | **1.2** | `81.4` | 1.9 ± 0.0 | 1.2 ± 0.0 |
+| 24 | `4b. Native STRUCT(...) Child Vector Write+Read (200K structs)` | `~NOISE` | `-43.7%` | 1.78x | 0.9 | **0.5** | `17.1` | 0.9 ± 0.0 | 0.5 ± 0.0 |
+| 25 | `4c. Nested LIST(BIGINT) Vector Write+Read (200K lists / 800K items)` | `~NOISE` | `-38.8%` | 1.63x | 1.2 | **0.7** | `13.6` | 1.2 ± 0.0 | 0.8 ± 0.1 |
+| 26 | `4d. Fixed ARRAY(DOUBLE, 4) Vector Write+Read (200K arrays / 800K f64)` | `~NOISE` | `-42.6%` | 1.74x | 0.9 | **0.5** | `15.8` | 0.9 ± 0.1 | 0.5 ± 0.0 |
+| 31 | `5d. Lexer: Native C API v2 duckdb_v2_tokenize_sql (300K tokens)` | **FASTER** | `-36.6%` | 1.58x | 64.1 | **40.6** | `13.4` | 66.2 ± 4.3 | 40.6 ± 0.1 |
+| 35 | `6a. UDF: Vectorized Scalar Callback odin_fma (1M rows)` | **FASTER** | `-36.0%` | 1.56x | 1.5 | **1.0** | `3.4` | 1.5 ± 0.2 | 1.1 ± 0.3 |
+| 36 | `6b. UDF: Streaming Table Function odin_gen_series (1M rows)` | **FASTER** | `-42.6%` | 1.74x | 4.2 | **2.4** | `5.8` | 4.1 ± 0.0 | 2.7 ± 0.6 |
+| 37 | `6c. UDF: Grouped Hash Aggregate odin_agg_sum (1M rows)` | `~NOISE` | `-16.5%` | 1.20x | 2.8 | **2.4** | `1.8` | 2.8 ± 0.3 | 2.4 ± 0.4 |
+| 38 | `6d. UDF: Table Function Projection + Filter Pushdown (1M rows)` | `~NOISE` | `-41.2%` | 1.70x | 0.8 | **0.4** | `37.2` | 0.7 ± 0.0 | 0.4 ± 0.0 |
+| 39 | `6e. UDF: Custom Type & Vectorized V2_Cast_Function (1M rows)` | `~NOISE` | `-38.1%` | 1.62x | 1.1 | **0.7** | `9.5` | 1.1 ± 0.0 | 0.7 ± 0.1 |
 
 
-#### 1.2 Sub-Microsecond Reflection Ingest, Unmarshaling & DSL Compilation (`ns`, 12 tests)
+#### 1.2 Sub-Microsecond Reflection Ingest, Unmarshaling & DSL Compilation (`ns`, 11 tests)
 
-| # | Benchmark | Verdict | Delta | Speedup | Base `9ec3509` (`ns`) | Curr `6a128a2` (`ns`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
+| # | Benchmark | Verdict | Delta | Speedup | Base `6a128a2` (`ns`) | Curr `eed3bbe` (`ns`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
 | ---: | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 | `1b. Ingest: Legacy V1 Appender API (100K rows)` | **REGRESSION** | `+53.9%` | 0.65x | 167 | **258** | `6.0` | 170 ± 16.7 | 255 ± 27.1 |
-| 3 | `1c. Ingest: V2 ColumnDataCollection append_slice (100K rows)` | `~NOISE` | `+51.5%` | 0.66x | 132 | **199** | `0.9` | 178 ± 126 | 263 ± 168 |
-| 4 | `1d. Ingest: Nullable Maybe(T) append_slice (100K rows, 25% NULL)` | `~NOISE` | `+58.8%` | 0.63x | 124 | **197** | `1.5` | 150 ± 65.6 | 240 ± 123 |
-| 7 | `1g. Ingest: Struct_Appender(T) 1K x 100-Row Micro-Batches (100K)` | `~NOISE` | `+25.4%` | 0.80x | 139 | **174** | `1.2` | 162 ± 66.3 | 233 ± 119 |
-| 11 | `2d. Unmarshal: core:reflect query_as Non-Null Structs (100K rows)` | **REGRESSION** | `+55.6%` | 0.64x | 64.3 | **100** | `13.5` | 64.9 ± 2.6 | 101 ± 5.3 |
-| 12 | `2e. Unmarshal: core:reflect query_as Nullable Maybe(T) (100K rows)` | **REGRESSION** | `+50.9%` | 0.66x | 88.4 | **133** | `16.2` | 88.7 ± 4.3 | 135 ± 4.8 |
-| 23 | `4a. JSON Tag Round-Trip: append_slice + query_as (10K structs)` | **REGRESSION** | `+57.1%` | 0.64x | 530 | **833** | `13.1` | 556 ± 42.9 | 843 ± 23.4 |
-| 28 | `5a. DSL: query_to_sql Pipeline Compilation (100K queries)` | **REGRESSION** | `+56.7%` | 0.64x | 225 | **352** | `144.4` | 224 ± 1.9 | 353 ± 0.6 |
-| 30 | `5c. Parser: sqllogic_parse_script (50K directives / 1K scripts)` | **REGRESSION** | `+59.5%` | 0.63x | 62.2 | **99.3** | `111.6` | 62.1 ± 0.6 | 99.2 ± 0.5 |
-| 31 | `5d. Lexer: Native C API v2 duckdb_v2_tokenize_sql (300K tokens)` | **REGRESSION** | `+57.1%` | 0.64x | 40.8 | **64.1** | `13.4` | 40.7 ± 0.2 | 66.2 ± 4.3 |
-| 33 | `5f. Quack: SQL Builders + URI Normalize + Template (100K ops)` | **REGRESSION** | `+63.9%` | 0.61x | 76.8 | **126** | `157.6` | 76.8 ± 0.2 | 126 ± 0.7 |
-| 34 | `5g. Reflection DDL: create_table_sql + v2_quote_identifier (100K)` | **REGRESSION** | `+63.4%` | 0.61x | 200 | **327** | `35.9` | 202 ± 5.6 | 330 ± 5.6 |
+| 2 | `1b. Ingest: Legacy V1 Appender API (100K rows)` | **FASTER** | `-35.4%` | 1.55x | 258 | **166** | `6.5` | 255 ± 27.1 | 165 ± 17.5 |
+| 3 | `1c. Ingest: V2 ColumnDataCollection append_slice (100K rows)` | `~NOISE` | `-37.7%` | 1.60x | 199 | **124** | `1.3` | 263 ± 168 | 154 ± 101 |
+| 4 | `1d. Ingest: Nullable Maybe(T) append_slice (100K rows, 25% NULL)` | `~NOISE` | `-40.2%` | 1.67x | 197 | **118** | `1.5` | 240 ± 123 | 146 ± 74.3 |
+| 7 | `1g. Ingest: Struct_Appender(T) 1K x 100-Row Micro-Batches (100K)` | `~NOISE` | `-33.6%` | 1.51x | 174 | **116** | `2.0` | 233 ± 119 | 124 ± 20.2 |
+| 11 | `2d. Unmarshal: core:reflect query_as Non-Null Structs (100K rows)` | **FASTER** | `-30.1%` | 1.43x | 100 | **69.9** | `12.1` | 101 ± 5.3 | 70.7 ± 1.7 |
+| 12 | `2e. Unmarshal: core:reflect query_as Nullable Maybe(T) (100K rows)` | **FASTER** | `-31.4%` | 1.46x | 133 | **91.5** | `15.6` | 135 ± 4.8 | 93.7 ± 4.1 |
+| 23 | `4a. JSON Tag Round-Trip: append_slice + query_as (10K structs)` | **FASTER** | `-36.3%` | 1.57x | 833 | **531** | `12.3` | 843 ± 23.4 | 549 ± 56.4 |
+| 28 | `5a. DSL: query_to_sql Pipeline Compilation (100K queries)` | **FASTER** | `-35.6%` | 1.55x | 352 | **227** | `143.7` | 353 ± 0.6 | 226 ± 2.2 |
+| 30 | `5c. Parser: sqllogic_parse_script (50K directives / 1K scripts)` | **FASTER** | `-43.1%` | 1.76x | 99.3 | **56.5** | `14.9` | 99.2 ± 0.5 | 60.4 ± 6.9 |
+| 33 | `5f. Quack: SQL Builders + URI Normalize + Template (100K ops)` | **FASTER** | `-36.3%` | 1.57x | 126 | **80.2** | `69.8` | 126 ± 0.7 | 80.4 ± 1.5 |
+| 34 | `5g. Reflection DDL: create_table_sql + v2_quote_identifier (100K)` | **FASTER** | `-37.1%` | 1.59x | 327 | **206** | `44.0` | 330 ± 5.6 | 205 ± 3.4 |
 
 
 #### 1.3 Multi-Microsecond Point Lookups, Catalog, VFS & Transactions (`µs`, 13 tests)
 
-| # | Benchmark | Verdict | Delta | Speedup | Base `9ec3509` (`µs`) | Curr `6a128a2` (`µs`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
+| # | Benchmark | Verdict | Delta | Speedup | Base `6a128a2` (`µs`) | Curr `eed3bbe` (`µs`) | Welch $z$ | Base Mean ± σ | Curr Mean ± σ |
 | ---: | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | `1a. Ingest: V2 Prepared Statement Loop (2K rows)` | **REGRESSION** | `+51.6%` | 0.66x | 152.9 | **231.9** | `38.4` | 153.5 ± 3.77 | 231.8 ± 2.57 |
-| 27 | `4e. Composite Values: VARIANT/MAP/UNION/DECIMAL (10K ops)` | **REGRESSION** | `+56.8%` | 0.64x | 3.72 | **5.83** | `43.5` | 3.74 ± 0.06 | 5.85 ± 0.09 |
-| 29 | `5b. Codegen: introspect_table_schema + Odin/CUE (1K tables)` | **REGRESSION** | `+65.7%` | 0.60x | 4.54 | **7.52** | `65.1` | 4.54 ± 0.01 | 7.56 ± 0.10 |
-| 32 | `5e. Catalog: duckdb_v2_connection_describe_table (5K lookups)` | **REGRESSION** | `+62.7%` | 0.61x | 2.93 | **4.77** | `33.6` | 2.97 ± 0.09 | 4.81 ± 0.08 |
-| 40 | `6f. UDF: V2_Replacement_Scan Virtual Table Scan (1K queries)` | **REGRESSION** | `+52.7%` | 0.65x | 272.8 | **416.5** | `23.4` | 277.9 ± 10.7 | 419.3 ± 8.24 |
-| 41 | `6g. Extensibility: V2_Pragma + V2_Custom_Option + V2_Macro (1K)` | **REGRESSION** | `+63.6%` | 0.61x | 68.2 | **111.5** | `33.5` | 68.1 ± 1.69 | 112.3 ± 2.41 |
-| 42 | `7a. Point Lookup: Ad-Hoc v2_query Parse+Bind+Exec (1K queries)` | **REGRESSION** | `+67.6%` | 0.60x | 218.9 | **366.8** | `39.5` | 217.6 ± 4.14 | 369.6 ± 7.54 |
-| 43 | `7b. Point Lookup: Pre-Compiled v2_prepared_execute (1K queries)` | **REGRESSION** | `+66.8%` | 0.60x | 191.0 | **318.6** | `40.7` | 193.3 ± 5.57 | 318.9 ± 4.08 |
-| 44 | `7c. DSL Pipeline: query_execute_as Build+Bind+Unmarshal (1K)` | **REGRESSION** | `+51.8%` | 0.66x | 433.7 | **658.2** | `34.7` | 440.0 ± 12.4 | 659.5 ± 6.78 |
-| 45 | `7d. Transactions: v2_with_transaction Commit + Rollback (1K tx)` | **REGRESSION** | `+64.0%` | 0.61x | 132.0 | **216.5** | `62.0` | 131.8 ± 1.77 | 216.8 ± 2.50 |
-| 46 | `7e. Prepared DSL: prepared_query_execute_as Cached Plan+Schema (1K)` | **REGRESSION** | `+54.1%` | 0.65x | 360.2 | **555.0** | `61.3` | 360.5 ± 6.07 | 555.3 ± 3.69 |
-| 47 | `8a. VFS: Positional write_at + read_at (1K x 64 KB = 64 MB)` | **REGRESSION** | `+36.8%` | 0.73x | 2.77 | **3.79** | `71.2` | 2.77 ± 0.02 | 3.80 ± 0.03 |
-| 48 | `8b. Telemetry: V2_Query_Metrics Tree + V2_Log_Sink (10K ops)` | **REGRESSION** | `+57.9%` | 0.63x | 10.5 | **16.6** | `79.6` | 10.6 ± 0.14 | 16.6 ± 0.09 |
+| 1 | `1a. Ingest: V2 Prepared Statement Loop (2K rows)` | **FASTER** | `-36.4%` | 1.57x | 231.9 | **147.4** | `45.2` | 231.8 ± 2.57 | 148.8 ± 3.79 |
+| 27 | `4e. Composite Values: VARIANT/MAP/UNION/DECIMAL (10K ops)` | **FASTER** | `-38.2%` | 1.62x | 5.83 | **3.60** | `52.3` | 5.85 ± 0.09 | 3.61 ± 0.04 |
+| 29 | `5b. Codegen: introspect_table_schema + Odin/CUE (1K tables)` | **FASTER** | `-39.5%` | 1.65x | 7.52 | **4.55** | `30.8` | 7.56 ± 0.10 | 4.61 ± 0.22 |
+| 32 | `5e. Catalog: duckdb_v2_connection_describe_table (5K lookups)` | **FASTER** | `-37.5%` | 1.60x | 4.77 | **2.98** | `22.1` | 4.81 ± 0.08 | 3.03 ± 0.19 |
+| 40 | `6f. UDF: V2_Replacement_Scan Virtual Table Scan (1K queries)` | **FASTER** | `-35.5%` | 1.55x | 416.5 | **268.7** | `35.2` | 419.3 ± 8.24 | 269.1 ± 5.69 |
+| 41 | `6g. Extensibility: V2_Pragma + V2_Custom_Option + V2_Macro (1K)` | **FASTER** | `-38.8%` | 1.63x | 111.5 | **68.3** | `40.1` | 112.3 ± 2.41 | 68.2 ± 0.53 |
+| 42 | `7a. Point Lookup: Ad-Hoc v2_query Parse+Bind+Exec (1K queries)` | **FASTER** | `-39.5%` | 1.65x | 366.8 | **222.0** | `43.6` | 369.6 ± 7.54 | 221.8 ± 0.91 |
+| 43 | `7b. Point Lookup: Pre-Compiled v2_prepared_execute (1K queries)` | **FASTER** | `-42.1%` | 1.73x | 318.6 | **184.6** | `57.9` | 318.9 ± 4.08 | 186.3 ± 3.66 |
+| 44 | `7c. DSL Pipeline: query_execute_as Build+Bind+Unmarshal (1K)` | **FASTER** | `-35.5%` | 1.55x | 658.2 | **424.8** | `54.5` | 659.5 ± 6.78 | 426.2 ± 8.01 |
+| 45 | `7d. Transactions: v2_with_transaction Commit + Rollback (1K tx)` | **FASTER** | `-41.2%` | 1.70x | 216.5 | **127.3** | `64.5` | 216.8 ± 2.50 | 128.1 ± 2.11 |
+| 46 | `7e. Prepared DSL: prepared_query_execute_as Cached Plan+Schema (1K)` | **FASTER** | `-37.2%` | 1.59x | 555.0 | **348.4** | `70.4` | 555.3 ± 3.69 | 349.5 ± 6.38 |
+| 47 | `8a. VFS: Positional write_at + read_at (1K x 64 KB = 64 MB)` | **FASTER** | `-41.0%` | 1.69x | 3.79 | **2.24** | `115.2` | 3.80 ± 0.03 | 2.23 ± 0.01 |
+| 48 | `8b. Telemetry: V2_Query_Metrics Tree + V2_Log_Sink (10K ops)` | **FASTER** | `-37.4%` | 1.60x | 16.6 | **10.4** | `102.7` | 16.6 ± 0.09 | 10.4 ± 0.12 |
 
 
-### 2. Odin Full Suite Results (`-o:speed -microarch:native`, Commit `6a128a2f8c8a`, 5 samples across 1 run(s))
+### 2. Odin Full Suite Results (`-o:speed -microarch:native`, Commit `eed3bbe02f72`, 7 samples across 1 run(s))
 
-#### 2.1 Vectorized Zero-Copy Scans, UDFs & Wire Codecs (`< 50 ns` · `20M–160B ops/s`, 23 tests)
-
-| # | Benchmark | Med (`ns`) | Mean ± σ | CV | Min `ops/s` | Max `ops/s` | IQR | `p95` | `p99` | Min | Max | Ops | Bandwidth |
-| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 5 | `1e. Ingest: Custom V2_Copy_Function COPY ... FROM (1M rows)` | **21.4** | 20.9 ± 7.6 | 36.1% | 30.9M | 83.7M | 5.1 | 30.3 | 31.9 | 11.9 | 32.3 | 1M | 714.0 MB/s |
-| 6 | `1f. Export: Custom V2_Copy_Function COPY ... TO Sink (1M rows)` | **3.0** | 3.3 ± 0.5 | 16.3% | 249M | 353M | 0.8 | 3.9 | 4.0 | 2.8 | 4.0 | 1M | 5134.9 MB/s |
-| 8 | `2a. Scan: Zero-Copy V2_Vector_View Flat (1M rows)` | **6.3** | 6.2 ± 0.7 | 12.1% | 142M | 191M | 1.1 | 7.0 | 7.0 | 5.2 | 7.0 | 1M | 3782.8 MB/s |
-| 9 | `2b. Scan: Zero-Copy V2_Selection_Vector Filtered (1M source rows)` | **4.4** | 4.4 ± 0.5 | 10.4% | 198M | 252M | 0.7 | 5.0 | 5.0 | 4.0 | 5.1 | 1M | 5385.8 MB/s |
-| 10 | `2c. Scan: Arrow C Data Interface Arrow_Array_Stream (1M rows)` | **6.8** | 7.1 ± 0.8 | 11.2% | 119M | 155M | 0.7 | 8.2 | 8.3 | 6.5 | 8.4 | 1M | 3525.3 MB/s |
-| 13 | `2f. Scan: Direct ColumnDataCollection Worker Scan (1M rows)` | **1.0** | 1.0 ± 0.1 | 12.1% | 801M | 1.1B | 0.1 | 1.2 | 1.2 | 0.9 | 1.2 | 1M | 14.6 GB/s |
-| 14 | `2g. Bridge: Arrow_Exporter -> Arrow_Importer Round-Trip (200K)` | **5.2** | 5.2 ± 0.2 | 4.8% | 181M | 201M | 0.4 | 5.5 | 5.5 | 5.0 | 5.5 | 200K | 2957.3 MB/s |
-| 15 | `2h. Scan: Multi-Worker ColumnDataCollection 4-Thread Scan (1M)` | **0.4** | 0.5 ± 0.1 | 15.3% | 1.7B | 2.4B | 0.0 | 0.6 | 0.6 | 0.4 | 0.6 | 1M | 34.4 GB/s |
-| 16 | `2i. Scan: Cooperative Stepper v2_step_chunk (1M rows)` | **5.8** | 6.2 ± 0.6 | 9.6% | 141M | 174M | 0.7 | 7.0 | 7.1 | 5.7 | 7.1 | 1M | 4082.4 MB/s |
-| 17 | `3a. V2_Bytes Write: Inline <= 12 B (v2_vector_assign_string, 200K)` | **6.9** | 7.0 ± 0.4 | 5.1% | 130M | 147M | 0.1 | 7.5 | 7.6 | 6.8 | 7.7 | 200K | 1653.6 MB/s |
-| 18 | `3b. V2_Bytes Write: Arena > 12 B (v2_vector_assign_string, 200K)` | **21.9** | 21.9 ± 0.1 | 0.5% | 45.5M | 46.0M | 0.1 | 22.0 | 22.0 | 21.7 | 22.0 | 200K | 1392.6 MB/s |
-| 19 | `3c. Vector Cast: duckdb_v2_vector_cast BIGINT -> DOUBLE (200K)` | **0.5** | 0.5 ± 0.0 | 2.4% | 2.0B | 2.1B | 0.0 | 0.5 | 0.5 | 0.5 | 0.5 | 200K | 31.1 GB/s |
-| 20 | `3d. Zero-Copy Alias: duckdb_v2_vector_reference (200K rows)` | **0.0** | 0.0 ± 0.0 | 5.4% | 93.7B | 106.8B | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 200K | 1509.7 GB/s |
-| 21 | `3e. Vector Flatten: .OTHER (MakeSequence) -> .FLAT (1M rows)` | **0.4** | 0.4 ± 0.0 | 0.7% | 2.67B | 2.72B | 0.0 | 0.4 | 0.4 | 0.4 | 0.4 | 1M | 20.0 GB/s |
-| 22 | `3f. Wire Codec: 128-Bit HUGEINT/INTERVAL/BIT/BIGNUM (200K)` | **1.9** | 1.9 ± 0.0 | 0.8% | 512M | 524M | 0.0 | 1.9 | 2.0 | 1.9 | 2.0 | 200K | 23.2 GB/s |
-| 24 | `4b. Native STRUCT(...) Child Vector Write+Read (200K structs)` | **0.9** | 0.9 ± 0.0 | 5.2% | 1.0B | 1.2B | 0.1 | 1.0 | 1.0 | 0.9 | 1.0 | 200K | 25.8 GB/s |
-| 25 | `4c. Nested LIST(BIGINT) Vector Write+Read (200K lists / 800K items)` | **1.2** | 1.2 ± 0.0 | 2.7% | 792M | 842M | 0.0 | 1.3 | 1.3 | 1.2 | 1.3 | 200K | 37.5 GB/s |
-| 26 | `4d. Fixed ARRAY(DOUBLE, 4) Vector Write+Read (200K arrays / 800K f64)` | **0.9** | 0.9 ± 0.1 | 5.8% | 1.0B | 1.2B | 0.0 | 0.9 | 0.9 | 0.8 | 1.0 | 200K | 34.3 GB/s |
-| 35 | `6a. UDF: Vectorized Scalar Callback odin_fma (1M rows)` | **1.5** | 1.5 ± 0.2 | 10.5% | 601M | 794M | 0.2 | 1.6 | 1.7 | 1.3 | 1.7 | 1M | 15.0 GB/s |
-| 36 | `6b. UDF: Streaming Table Function odin_gen_series (1M rows)` | **4.2** | 4.1 ± 0.0 | 1.2% | 239M | 246M | 0.1 | 4.2 | 4.2 | 4.1 | 4.2 | 1M | 3669.6 MB/s |
-| 37 | `6c. UDF: Grouped Hash Aggregate odin_agg_sum (1M rows)` | **2.8** | 2.8 ± 0.3 | 12.1% | 307M | 430M | 0.2 | 3.2 | 3.2 | 2.3 | 3.3 | 1M | 2708.3 MB/s |
-| 38 | `6d. UDF: Table Function Projection + Filter Pushdown (1M rows)` | **0.8** | 0.7 ± 0.0 | 2.1% | 1.3B | 1.4B | 0.0 | 0.8 | 0.8 | 0.7 | 0.8 | 1M | 19.8 GB/s |
-| 39 | `6e. UDF: Custom Type & Vectorized V2_Cast_Function (1M rows)` | **1.1** | 1.1 ± 0.0 | 3.4% | 864M | 940M | 0.1 | 1.2 | 1.2 | 1.1 | 1.2 | 1M | 13.4 GB/s |
-
-#### 2.2 Sub-Microsecond Reflection Ingest, Unmarshaling & DSL Compilation (`50–999 ns` · `1M–20M ops/s`, 12 tests)
+#### 2.1 Vectorized Zero-Copy Scans, UDFs & Wire Codecs (`< 50 ns` · `20M–160B ops/s`, 24 tests)
 
 | # | Benchmark | Med (`ns`) | Mean ± σ | CV | Min `ops/s` | Max `ops/s` | IQR | `p95` | `p99` | Min | Max | Ops | Bandwidth |
 | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 | `1b. Ingest: Legacy V1 Appender API (100K rows)` | **258** | 255 ± 27.1 | 10.6% | 3.4M | 4.4M | 32.2 | 288 | 293 | 228 | 295 | 100K | 137.0 MB/s |
-| 3 | `1c. Ingest: V2 ColumnDataCollection append_slice (100K rows)` | **199** | 263 ± 168 | 64.0% | 1.8M | 5.9M | 21.1 | 491 | 549 | 170 | 563 | 100K | 177.1 MB/s |
-| 4 | `1d. Ingest: Nullable Maybe(T) append_slice (100K rows, 25% NULL)` | **197** | 240 ± 123 | 51.1% | 2.2M | 5.8M | 29.9 | 407 | 448 | 172 | 459 | 100K | 179.6 MB/s |
-| 7 | `1g. Ingest: Struct_Appender(T) 1K x 100-Row Micro-Batches (100K)` | **174** | 233 ± 119 | 51.0% | 2.3M | 5.9M | 33.7 | 396 | 434 | 168 | 444 | 100K | 202.9 MB/s |
-| 11 | `2d. Unmarshal: core:reflect query_as Non-Null Structs (100K rows)` | **100** | 101 ± 5.3 | 5.3% | 9.1M | 10.5M | 2.9 | 108 | 109 | 95.6 | 109 | 100K | 352.8 MB/s |
-| 12 | `2e. Unmarshal: core:reflect query_as Nullable Maybe(T) (100K rows)` | **133** | 135 ± 4.8 | 3.6% | 7.1M | 7.7M | 7.8 | 141 | 141 | 131 | 141 | 100K | 264.5 MB/s |
-| 23 | `4a. JSON Tag Round-Trip: append_slice + query_as (10K structs)` | **833** | 843 ± 23.4 | 2.8% | 1.1M | 1.2M | 7.9 | 875 | 882 | 827 | 884 | 10K | 73.3 MB/s |
-| 28 | `5a. DSL: query_to_sql Pipeline Compilation (100K queries)` | **352** | 353 ± 0.6 | 0.2% | 2.83M | 2.84M | 1.0 | 353 | 353 | 352 | 353 | 100K | — |
-| 30 | `5c. Parser: sqllogic_parse_script (50K directives / 1K scripts)` | **99.3** | 99.2 ± 0.5 | 0.5% | 10.0M | 10.2M | 0.1 | 99.5 | 99.6 | 98.4 | 99.6 | 50K | — |
-| 31 | `5d. Lexer: Native C API v2 duckdb_v2_tokenize_sql (300K tokens)` | **64.1** | 66.2 ± 4.3 | 6.4% | 13.6M | 15.7M | 1.5 | 72.0 | 73.3 | 63.7 | 73.7 | 300K | — |
-| 33 | `5f. Quack: SQL Builders + URI Normalize + Template (100K ops)` | **126** | 126 ± 0.7 | 0.5% | 7.9M | 8.0M | 1.0 | 127 | 127 | 125 | 127 | 100K | — |
-| 34 | `5g. Reflection DDL: create_table_sql + v2_quote_identifier (100K)` | **327** | 330 ± 5.6 | 1.7% | 2.9M | 3.1M | 1.4 | 337 | 339 | 326 | 340 | 100K | — |
+| 5 | `1e. Ingest: Custom V2_Copy_Function COPY ... FROM (1M rows)` | **8.3** | 11.2 ± 3.8 | 33.7% | 62.9M | 124M | 6.7 | 15.6 | 15.9 | 8.1 | 15.9 | 1M | 1834.0 MB/s |
+| 6 | `1f. Export: Custom V2_Copy_Function COPY ... TO Sink (1M rows)` | **3.2** | 3.0 ± 0.5 | 18.1% | 279M | 429M | 0.9 | 3.6 | 3.6 | 2.3 | 3.6 | 1M | 4710.3 MB/s |
+| 8 | `2a. Scan: Zero-Copy V2_Vector_View Flat (1M rows)` | **5.8** | 5.8 ± 0.7 | 12.8% | 147M | 214M | 0.8 | 6.7 | 6.8 | 4.7 | 6.8 | 1M | 4134.6 MB/s |
+| 9 | `2b. Scan: Zero-Copy V2_Selection_Vector Filtered (1M source rows)` | **3.8** | 3.8 ± 0.2 | 6.2% | 247M | 290M | 0.4 | 4.0 | 4.0 | 3.4 | 4.0 | 1M | 6256.6 MB/s |
+| 10 | `2c. Scan: Arrow C Data Interface Arrow_Array_Stream (1M rows)` | **5.8** | 5.5 ± 0.6 | 11.2% | 157M | 208M | 1.0 | 6.3 | 6.4 | 4.8 | 6.4 | 1M | 4091.2 MB/s |
+| 13 | `2f. Scan: Direct ColumnDataCollection Worker Scan (1M rows)` | **1.0** | 1.1 ± 0.2 | 16.8% | 691M | 1.1B | 0.1 | 1.4 | 1.4 | 0.9 | 1.4 | 1M | 14.2 GB/s |
+| 14 | `2g. Bridge: Arrow_Exporter -> Arrow_Importer Round-Trip (200K)` | **3.8** | 3.8 ± 0.2 | 5.0% | 243M | 275M | 0.3 | 4.1 | 4.1 | 3.6 | 4.1 | 200K | 4004.9 MB/s |
+| 15 | `2h. Scan: Multi-Worker ColumnDataCollection 4-Thread Scan (1M)` | **0.4** | 0.4 ± 0.1 | 30.9% | 1.4B | 3.0B | 0.1 | 0.6 | 0.7 | 0.3 | 0.7 | 1M | 41.1 GB/s |
+| 16 | `2i. Scan: Cooperative Stepper v2_step_chunk (1M rows)` | **4.9** | 5.1 ± 0.6 | 11.3% | 166M | 222M | 0.8 | 5.9 | 6.0 | 4.5 | 6.0 | 1M | 4845.4 MB/s |
+| 17 | `3a. V2_Bytes Write: Inline <= 12 B (v2_vector_assign_string, 200K)` | **4.8** | 4.7 ± 0.2 | 5.0% | 204M | 239M | 0.0 | 4.9 | 4.9 | 4.2 | 4.9 | 200K | 2391.5 MB/s |
+| 18 | `3b. V2_Bytes Write: Arena > 12 B (v2_vector_assign_string, 200K)` | **14.0** | 14.6 ± 1.7 | 11.6% | 54.1M | 72.2M | 0.2 | 17.2 | 18.2 | 13.8 | 18.5 | 200K | 2185.2 MB/s |
+| 19 | `3c. Vector Cast: duckdb_v2_vector_cast BIGINT -> DOUBLE (200K)` | **0.3** | 0.3 ± 0.0 | 1.9% | 3.2B | 3.4B | 0.0 | 0.3 | 0.3 | 0.3 | 0.3 | 200K | 49.8 GB/s |
+| 20 | `3d. Zero-Copy Alias: duckdb_v2_vector_reference (200K rows)` | **0.0** | 0.0 ± 0.0 | 10.0% | 126.3B | 162.3B | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 200K | 2399.5 GB/s |
+| 21 | `3e. Vector Flatten: .OTHER (MakeSequence) -> .FLAT (1M rows)` | **0.2** | 0.2 ± 0.0 | 0.8% | 4.2B | 4.3B | 0.0 | 0.2 | 0.2 | 0.2 | 0.2 | 1M | 31.4 GB/s |
+| 22 | `3f. Wire Codec: 128-Bit HUGEINT/INTERVAL/BIT/BIGNUM (200K)` | **1.2** | 1.2 ± 0.0 | 1.1% | 811M | 836M | 0.0 | 1.2 | 1.2 | 1.2 | 1.2 | 200K | 37.2 GB/s |
+| 24 | `4b. Native STRUCT(...) Child Vector Write+Read (200K structs)` | **0.5** | 0.5 ± 0.0 | 5.4% | 1.8B | 2.1B | 0.0 | 0.5 | 0.5 | 0.5 | 0.5 | 200K | 45.9 GB/s |
+| 25 | `4c. Nested LIST(BIGINT) Vector Write+Read (200K lists / 800K items)` | **0.7** | 0.8 ± 0.1 | 10.7% | 1.1B | 1.4B | 0.0 | 0.9 | 0.9 | 0.7 | 0.9 | 200K | 61.2 GB/s |
+| 26 | `4d. Fixed ARRAY(DOUBLE, 4) Vector Write+Read (200K arrays / 800K f64)` | **0.5** | 0.5 ± 0.0 | 3.4% | 1.9B | 2.1B | 0.0 | 0.5 | 0.5 | 0.5 | 0.5 | 200K | 59.8 GB/s |
+| 31 | `5d. Lexer: Native C API v2 duckdb_v2_tokenize_sql (300K tokens)` | **40.6** | 40.6 ± 0.1 | 0.2% | 24.5M | 24.7M | 0.1 | 40.8 | 40.8 | 40.5 | 40.8 | 300K | — |
+| 35 | `6a. UDF: Vectorized Scalar Callback odin_fma (1M rows)` | **1.0** | 1.1 ± 0.3 | 24.3% | 634M | 1.2B | 0.2 | 1.5 | 1.6 | 0.8 | 1.6 | 1M | 23.5 GB/s |
+| 36 | `6b. UDF: Streaming Table Function odin_gen_series (1M rows)` | **2.4** | 2.7 ± 0.6 | 23.1% | 249M | 433M | 0.5 | 3.8 | 4.0 | 2.3 | 4.0 | 1M | 6396.1 MB/s |
+| 37 | `6c. UDF: Grouped Hash Aggregate odin_agg_sum (1M rows)` | **2.4** | 2.4 ± 0.4 | 17.1% | 342M | 587M | 0.4 | 2.9 | 2.9 | 1.7 | 2.9 | 1M | 3241.8 MB/s |
+| 38 | `6d. UDF: Table Function Projection + Filter Pushdown (1M rows)` | **0.4** | 0.4 ± 0.0 | 2.3% | 2.2B | 2.3B | 0.0 | 0.5 | 0.5 | 0.4 | 0.5 | 1M | 33.6 GB/s |
+| 39 | `6e. UDF: Custom Type & Vectorized V2_Cast_Function (1M rows)` | **0.7** | 0.7 ± 0.1 | 13.4% | 1.1B | 1.5B | 0.0 | 0.9 | 0.9 | 0.7 | 0.9 | 1M | 21.7 GB/s |
+
+#### 2.2 Sub-Microsecond Reflection Ingest, Unmarshaling & DSL Compilation (`50–999 ns` · `1M–20M ops/s`, 11 tests)
+
+| # | Benchmark | Med (`ns`) | Mean ± σ | CV | Min `ops/s` | Max `ops/s` | IQR | `p95` | `p99` | Min | Max | Ops | Bandwidth |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | `1b. Ingest: Legacy V1 Appender API (100K rows)` | **166** | 165 ± 17.5 | 10.6% | 5.3M | 7.0M | 24.2 | 187 | 190 | 142 | 190 | 100K | 212.0 MB/s |
+| 3 | `1c. Ingest: V2 ColumnDataCollection append_slice (100K rows)` | **124** | 154 ± 101 | 65.6% | 2.6M | 10.1M | 24.6 | 308 | 367 | 99.1 | 382 | 100K | 284.1 MB/s |
+| 4 | `1d. Ingest: Nullable Maybe(T) append_slice (100K rows, 25% NULL)` | **118** | 146 ± 74.3 | 51.0% | 3.2M | 9.6M | 24.0 | 262 | 301 | 105 | 311 | 100K | 300.2 MB/s |
+| 7 | `1g. Ingest: Struct_Appender(T) 1K x 100-Row Micro-Batches (100K)` | **116** | 124 ± 20.2 | 16.2% | 6.4M | 9.7M | 28.3 | 152 | 156 | 104 | 157 | 100K | 305.4 MB/s |
+| 11 | `2d. Unmarshal: core:reflect query_as Non-Null Structs (100K rows)` | **69.9** | 70.7 ± 1.7 | 2.4% | 13.7M | 14.5M | 2.7 | 72.9 | 73.0 | 69.0 | 73.0 | 100K | 504.7 MB/s |
+| 12 | `2e. Unmarshal: core:reflect query_as Nullable Maybe(T) (100K rows)` | **91.5** | 93.7 ± 4.1 | 4.4% | 9.8M | 11.1M | 3.9 | 100 | 101 | 90.4 | 102 | 100K | 385.8 MB/s |
+| 23 | `4a. JSON Tag Round-Trip: append_slice + query_as (10K structs)` | **531** | 549 ± 56.4 | 10.3% | 1.5M | 2.0M | 34.7 | 636 | 664 | 510 | 672 | 10K | 115.0 MB/s |
+| 28 | `5a. DSL: query_to_sql Pipeline Compilation (100K queries)` | **227** | 226 ± 2.2 | 1.0% | 4.4M | 4.5M | 2.5 | 228 | 228 | 222 | 228 | 100K | — |
+| 30 | `5c. Parser: sqllogic_parse_script (50K directives / 1K scripts)` | **56.5** | 60.4 ± 6.9 | 11.3% | 13.7M | 18.1M | 7.9 | 71.0 | 72.5 | 55.2 | 72.9 | 50K | — |
+| 33 | `5f. Quack: SQL Builders + URI Normalize + Template (100K ops)` | **80.2** | 80.4 ± 1.5 | 1.9% | 11.9M | 12.6M | 0.9 | 82.7 | 83.5 | 79.2 | 83.7 | 100K | — |
+| 34 | `5g. Reflection DDL: create_table_sql + v2_quote_identifier (100K)` | **206** | 205 ± 3.4 | 1.7% | 4.7M | 5.0M | 3.0 | 210 | 212 | 201 | 212 | 100K | — |
 
 #### 2.3 Multi-Microsecond Point Lookups, Catalog, VFS & Transactions (`≥ 1 µs` · `2K–360K ops/s`, 13 tests)
 
 | # | Benchmark | Med (`µs`) | Mean ± σ | CV | Min `ops/s` | Max `ops/s` | IQR | `p95` | `p99` | Min | Max | Ops | Bandwidth |
 | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | `1a. Ingest: V2 Prepared Statement Loop (2K rows)` | **231.9** | 231.8 ± 2.57 | 1.1% | 4.3K | 4.4K | 3.75 | 234.8 | 235.0 | 228.9 | 235.1 | 2K | 0.2 MB/s |
-| 27 | `4e. Composite Values: VARIANT/MAP/UNION/DECIMAL (10K ops)` | **5.83** | 5.85 ± 0.09 | 1.5% | 167K | 173K | 0.05 | 5.97 | 6.00 | 5.79 | 6.00 | 10K | — |
-| 29 | `5b. Codegen: introspect_table_schema + Odin/CUE (1K tables)` | **7.52** | 7.56 ± 0.10 | 1.4% | 129K | 134K | 0.09 | 7.70 | 7.72 | 7.46 | 7.73 | 1K | — |
-| 32 | `5e. Catalog: duckdb_v2_connection_describe_table (5K lookups)` | **4.77** | 4.81 ± 0.08 | 1.7% | 202K | 210K | 0.03 | 4.93 | 4.95 | 4.76 | 4.96 | 5K | — |
-| 40 | `6f. UDF: V2_Replacement_Scan Virtual Table Scan (1K queries)` | **416.5** | 419.3 ± 8.24 | 2.0% | 2.3K | 2.4K | 6.21 | 429.7 | 431.1 | 409.5 | 431.5 | 1K | — |
-| 41 | `6g. Extensibility: V2_Pragma + V2_Custom_Option + V2_Macro (1K)` | **111.5** | 112.3 ± 2.41 | 2.1% | 8.6K | 9.1K | 1.21 | 115.6 | 116.3 | 110.3 | 116.4 | 1K | — |
-| 42 | `7a. Point Lookup: Ad-Hoc v2_query Parse+Bind+Exec (1K queries)` | **366.8** | 369.6 ± 7.54 | 2.0% | 2.6K | 2.8K | 2.30 | 379.8 | 381.9 | 362.9 | 382.5 | 1K | — |
-| 43 | `7b. Point Lookup: Pre-Compiled v2_prepared_execute (1K queries)` | **318.6** | 318.9 ± 4.08 | 1.3% | 3.1K | 3.2K | 3.27 | 324.3 | 325.3 | 315.5 | 325.6 | 1K | — |
-| 44 | `7c. DSL Pipeline: query_execute_as Build+Bind+Unmarshal (1K)` | **658.2** | 659.5 ± 6.78 | 1.0% | 1.50K | 1.53K | 11.4 | 667.2 | 667.6 | 652.5 | 667.7 | 1K | 0.1 MB/s |
-| 45 | `7d. Transactions: v2_with_transaction Commit + Rollback (1K tx)` | **216.5** | 216.8 ± 2.50 | 1.2% | 4.5K | 4.7K | 3.00 | 219.9 | 220.3 | 214.2 | 220.5 | 1K | — |
-| 46 | `7e. Prepared DSL: prepared_query_execute_as Cached Plan+Schema (1K)` | **555.0** | 555.3 ± 3.69 | 0.7% | 1.78K | 1.82K | 1.44 | 560.0 | 560.9 | 551.0 | 561.1 | 1K | 0.1 MB/s |
-| 47 | `8a. VFS: Positional write_at + read_at (1K x 64 KB = 64 MB)` | **3.79** | 3.80 ± 0.03 | 0.7% | 260K | 265K | 0.03 | 3.84 | 3.84 | 3.77 | 3.84 | 1K | 16.1 GB/s |
-| 48 | `8b. Telemetry: V2_Query_Metrics Tree + V2_Log_Sink (10K ops)` | **16.6** | 16.6 ± 0.09 | 0.5% | 60.0K | 60.8K | 0.05 | 16.7 | 16.7 | 16.4 | 16.7 | 10K | — |
+| 1 | `1a. Ingest: V2 Prepared Statement Loop (2K rows)` | **147.4** | 148.8 ± 3.79 | 2.5% | 6.4K | 6.9K | 2.42 | 154.9 | 156.2 | 145.6 | 156.6 | 2K | 0.2 MB/s |
+| 27 | `4e. Composite Values: VARIANT/MAP/UNION/DECIMAL (10K ops)` | **3.60** | 3.61 ± 0.04 | 1.2% | 273K | 283K | 0.03 | 3.66 | 3.66 | 3.53 | 3.67 | 10K | — |
+| 29 | `5b. Codegen: introspect_table_schema + Odin/CUE (1K tables)` | **4.55** | 4.61 ± 0.22 | 4.8% | 201K | 229K | 0.25 | 4.93 | 4.96 | 4.37 | 4.97 | 1K | — |
+| 32 | `5e. Catalog: duckdb_v2_connection_describe_table (5K lookups)` | **2.98** | 3.03 ± 0.19 | 6.3% | 291K | 352K | 0.06 | 3.32 | 3.42 | 2.84 | 3.44 | 5K | — |
+| 40 | `6f. UDF: V2_Replacement_Scan Virtual Table Scan (1K queries)` | **268.7** | 269.1 ± 5.69 | 2.1% | 3.6K | 3.8K | 4.02 | 277.2 | 279.1 | 261.5 | 279.6 | 1K | — |
+| 41 | `6g. Extensibility: V2_Pragma + V2_Custom_Option + V2_Macro (1K)` | **68.3** | 68.2 ± 0.53 | 0.8% | 14.5K | 14.9K | 0.35 | 68.9 | 69.0 | 67.3 | 69.0 | 1K | — |
+| 42 | `7a. Point Lookup: Ad-Hoc v2_query Parse+Bind+Exec (1K queries)` | **222.0** | 221.8 ± 0.91 | 0.4% | 4.48K | 4.54K | 1.11 | 222.9 | 223.0 | 220.4 | 223.0 | 1K | — |
+| 43 | `7b. Point Lookup: Pre-Compiled v2_prepared_execute (1K queries)` | **184.6** | 186.3 ± 3.66 | 2.0% | 5.2K | 5.4K | 3.53 | 192.0 | 192.5 | 183.7 | 192.7 | 1K | — |
+| 44 | `7c. DSL Pipeline: query_execute_as Build+Bind+Unmarshal (1K)` | **424.8** | 426.2 ± 8.01 | 1.9% | 2.3K | 2.4K | 11.7 | 435.8 | 436.6 | 415.8 | 436.8 | 1K | 0.1 MB/s |
+| 45 | `7d. Transactions: v2_with_transaction Commit + Rollback (1K tx)` | **127.3** | 128.1 ± 2.11 | 1.6% | 7.6K | 7.9K | 2.99 | 131.1 | 131.5 | 126.2 | 131.6 | 1K | — |
+| 46 | `7e. Prepared DSL: prepared_query_execute_as Cached Plan+Schema (1K)` | **348.4** | 349.5 ± 6.38 | 1.8% | 2.8K | 2.9K | 9.23 | 358.0 | 359.1 | 342.1 | 359.3 | 1K | 0.1 MB/s |
+| 47 | `8a. VFS: Positional write_at + read_at (1K x 64 KB = 64 MB)` | **2.24** | 2.23 ± 0.01 | 0.6% | 446K | 454K | 0.02 | 2.24 | 2.24 | 2.20 | 2.24 | 1K | 27.3 GB/s |
+| 48 | `8b. Telemetry: V2_Query_Metrics Tree + V2_Log_Sink (10K ops)` | **10.4** | 10.4 ± 0.12 | 1.2% | 94.3K | 97.7K | 0.10 | 10.5 | 10.6 | 10.2 | 10.6 | 10K | — |
 <!-- END_BENCHMARK_TABLE -->
 
 ---
