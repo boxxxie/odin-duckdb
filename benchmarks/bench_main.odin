@@ -335,6 +335,7 @@ run_timed :: proc(
 	bytes_per_row: int,
 	default_iterations: int,
 	fn: proc(),
+	pre_trial: proc() = nil,
 ) -> Bench_Result {
 	g_bench_rank += 1
 	if !should_run_group(bench_group_for_name(name)) || !matches_name_filter(name) {
@@ -343,6 +344,9 @@ run_timed :: proc(
 	n := g_runs if g_runs > 0 else clamp(default_iterations, 1, MAX_RUNS)
 
 	for _ in 0 ..< g_warmup {
+		if pre_trial != nil {
+			pre_trial()
+		}
 		fn()
 		free_all(context.temp_allocator)
 	}
@@ -364,6 +368,9 @@ run_timed :: proc(
 	sorted_ms: [MAX_RUNS]f64
 
 	for i := 0; i < n; i += 1 {
+		if pre_trial != nil {
+			pre_trial()
+		}
 		sw: time.Stopwatch
 		time.stopwatch_start(&sw)
 		fn()
@@ -1314,9 +1321,27 @@ bench_pushdown_exec_cb :: proc "c" (
 	st.current += i64(emit)
 }
 
+reset_ingest_v2 :: proc() {
+	rc := duckdb.v2_exec_drain(g_db.conn, "TRUNCATE TABLE bench_ingest_v2")
+	assert(rc == .NONE)
+}
+
+reset_ingest_v1 :: proc() {
+	duckdb.exec(&g_v1_db, "TRUNCATE TABLE bench_ingest_v1")
+}
+
+reset_nullable_v2 :: proc() {
+	rc := duckdb.v2_exec_drain(g_db.conn, "TRUNCATE TABLE bench_nullable_v2")
+	assert(rc == .NONE)
+}
+
+reset_copy_dest :: proc() {
+	rc := duckdb.v2_exec_drain(g_db.conn, "TRUNCATE TABLE bench_copy_dest")
+	assert(rc == .NONE)
+}
+
 // 1a. V2 Prepared Statement row-by-row ingestion (2,000 rows inside 1 transaction)
 bench_ingest_v2_prepared_2k :: proc() {
-	_ = duckdb.v2_exec_drain(g_db.conn, "DELETE FROM bench_ingest_v2")
 	_ = duckdb.v2_exec_drain(g_db.conn, "BEGIN TRANSACTION")
 
 	prep: duckdb.V2_Prepared_Statement_Handle
@@ -1347,7 +1372,6 @@ bench_ingest_v2_prepared_2k :: proc() {
 
 // 1b. Legacy V1 Appender API (100,000 rows)
 bench_ingest_v1_appender_100k :: proc() {
-	duckdb.exec(&g_v1_db, "DELETE FROM bench_ingest_v1")
 	app: duckdb.duckdb_appender
 	_ = duckdb.duckdb_appender_create(g_v1_db.conn, nil, "bench_ingest_v1", &app)
 	defer duckdb.duckdb_appender_destroy(&app)
@@ -1366,7 +1390,6 @@ bench_ingest_v1_appender_100k :: proc() {
 
 // 1c. V2 ColumnDataCollection `append_slice` (100,000 rows)
 bench_ingest_v2_append_slice_100k :: proc() {
-	_ = duckdb.v2_exec_drain(g_db.conn, "DELETE FROM bench_ingest_v2")
 	rc := duckdb.append_slice(g_db.conn, "bench_ingest_v2", g_ingest_batch_100k)
 	assert(rc == .NONE)
 }
@@ -1446,7 +1469,6 @@ bench_query_as_struct_100k :: proc() {
 
 // 2d. Nullable `Maybe(T)` struct round-trip (`append_slice` + `query_as`) with 25% SQL NULLs (100,000 rows)
 bench_nullable_maybe_ingest_100k :: proc() {
-	_ = duckdb.v2_exec_drain(g_db.conn, "DELETE FROM bench_nullable_v2")
 	rc := duckdb.append_slice(g_db.conn, "bench_nullable_v2", g_nullable_batch_100k)
 	assert(rc == .NONE)
 }
@@ -1808,7 +1830,6 @@ bench_point_lookup_prepared_1k :: proc() {
 
 // 1e. Custom `V2_Copy_Function_Handle` (`COPY ... FROM` source & `COPY ... TO` sink, 1,000,000 rows)
 bench_copy_from_1m :: proc() {
-	_ = duckdb.v2_exec_drain(g_db.conn, "DELETE FROM bench_copy_dest")
 	g_copy_sink_state.from_goal = 1_000_000
 	rc := duckdb.v2_exec_drain(g_db.conn, "COPY bench_copy_dest FROM 'virtual_src.odincopy' (FORMAT odin_bench_copy)")
 	assert(rc == .NONE && g_copy_sink_state.from_cursor == 1_000_000)
@@ -2458,7 +2479,6 @@ bench_dsl_prepared_query_execute_as_1k :: proc() {
 
 // 1g. Streaming Micro-Batches: `Struct_Appender(T)` (1,000 x 100-row micro-batches = 100,000 rows)
 bench_struct_appender_microbatches_100k :: proc() {
-	_ = duckdb.v2_exec_drain(g_db.conn, "DELETE FROM bench_ingest_v2")
 	for b := 0; b < 1_000; b += 1 {
 		start := b * 100
 		rc := duckdb.struct_appender_append(&g_struct_appender, g_ingest_batch_100k[start : start + 100])
@@ -2909,19 +2929,19 @@ run_benchmarks :: proc() -> int {
 	}
 
 	// sizeof(Telemetry_Row) on the wire ~ 8 + 12 + 8 + 8 + 1 = 37 bytes/row
-	append(&results, run_timed("1a. Ingest: V2 Prepared Statement Loop (2K rows)", 2_000, 37, 5, bench_ingest_v2_prepared_2k))
-	append(&results, run_timed("1b. Ingest: Legacy V1 Appender API (100K rows)", 100_000, 37, 5, bench_ingest_v1_appender_100k))
-	append(&results, run_timed("1c. Ingest: V2 ColumnDataCollection `append_slice` (100K rows)", 100_000, 37, 5, bench_ingest_v2_append_slice_100k))
-	append(&results, run_timed("1d. Ingest: Nullable `Maybe(T)` `append_slice` (100K rows, 25% NULL)", 100_000, 37, 5, bench_nullable_maybe_ingest_100k))
-	append(&results, run_timed("1e. Ingest: Custom `V2_Copy_Function` `COPY ... FROM` (1M rows)", 1_000_000, 16, 5, bench_copy_from_1m))
-	append(&results, run_timed("1f. Export: Custom `V2_Copy_Function` `COPY ... TO` Sink (1M rows)", 1_000_000, 16, 5, bench_copy_to_1m))
-	append(&results, run_timed("1g. Ingest: `Struct_Appender(T)` 1K x 100-Row Micro-Batches (100K)", 100_000, 37, 5, bench_struct_appender_microbatches_100k))
+	append(&results, run_timed("1a. Ingest: V2 Prepared Statement Loop (2K rows)", 2_000, 37, 7, bench_ingest_v2_prepared_2k, reset_ingest_v2))
+	append(&results, run_timed("1b. Ingest: Legacy V1 Appender API (100K rows)", 100_000, 37, 7, bench_ingest_v1_appender_100k, reset_ingest_v1))
+	append(&results, run_timed("1c. Ingest: V2 ColumnDataCollection `append_slice` (100K rows)", 100_000, 37, 7, bench_ingest_v2_append_slice_100k, reset_ingest_v2))
+	append(&results, run_timed("1d. Ingest: Nullable `Maybe(T)` `append_slice` (100K rows, 25% NULL)", 100_000, 37, 7, bench_nullable_maybe_ingest_100k, reset_nullable_v2))
+	append(&results, run_timed("1e. Ingest: Custom `V2_Copy_Function` `COPY ... FROM` (1M rows)", 1_000_000, 16, 7, bench_copy_from_1m, reset_copy_dest))
+	append(&results, run_timed("1f. Export: Custom `V2_Copy_Function` `COPY ... TO` Sink (1M rows)", 1_000_000, 16, 7, bench_copy_to_1m))
+	append(&results, run_timed("1g. Ingest: `Struct_Appender(T)` 1K x 100-Row Micro-Batches (100K)", 100_000, 37, 7, bench_struct_appender_microbatches_100k, reset_ingest_v2))
 
 	append(&results, run_timed("2a. Scan: Zero-Copy `V2_Vector_View` Flat (1M rows)", 1_000_000, 25, 7, bench_scan_v2_vector_view_1m))
 	append(&results, run_timed("2b. Scan: Zero-Copy `V2_Selection_Vector` Filtered (1M source rows)", 1_000_000, 25, 7, bench_scan_selection_vector_1m))
 	append(&results, run_timed("2c. Scan: Arrow C Data Interface `Arrow_Array_Stream` (1M rows)", 1_000_000, 25, 7, bench_scan_v2_arrow_stream_1m))
-	append(&results, run_timed("2d. Unmarshal: `core:reflect` `query_as` Non-Null Structs (100K rows)", 100_000, 37, 5, bench_query_as_struct_100k))
-	append(&results, run_timed("2e. Unmarshal: `core:reflect` `query_as` Nullable `Maybe(T)` (100K rows)", 100_000, 37, 5, bench_nullable_maybe_query_as_100k))
+	append(&results, run_timed("2d. Unmarshal: `core:reflect` `query_as` Non-Null Structs (100K rows)", 100_000, 37, 7, bench_query_as_struct_100k))
+	append(&results, run_timed("2e. Unmarshal: `core:reflect` `query_as` Nullable `Maybe(T)` (100K rows)", 100_000, 37, 7, bench_nullable_maybe_query_as_100k))
 	append(&results, run_timed("2f. Scan: Direct `ColumnDataCollection` Worker Scan (1M rows)", 1_000_000, 16, 7, bench_scan_collection_direct_1m))
 	append(&results, run_timed("2g. Bridge: `Arrow_Exporter` -> `Arrow_Importer` Round-Trip (200K)", 200_000, 16, 7, bench_arrow_exporter_importer_roundtrip_200k))
 	append(&results, run_timed("2h. Scan: Multi-Worker `ColumnDataCollection` 4-Thread Scan (1M)", 1_000_000, 16, 7, bench_scan_collection_parallel_4w_1m))
@@ -2934,36 +2954,36 @@ run_benchmarks :: proc() -> int {
 	append(&results, run_timed("3e. Vector Flatten: `.OTHER` (`MakeSequence`) -> `.FLAT` (1M rows)", 1_000_000, 8, 7, bench_vector_sequence_flatten_1m))
 	append(&results, run_timed("3f. Wire Codec: 128-Bit `HUGEINT`/`INTERVAL`/`BIT`/`BIGNUM` (200K)", 200_000, 48, 7, bench_128bit_bit_and_bignum_codec_200k))
 
-	append(&results, run_timed("4a. JSON Tag Round-Trip: `append_slice` + `query_as` (10K structs)", 10_000, 64, 5, bench_json_tag_roundtrip_10k))
+	append(&results, run_timed("4a. JSON Tag Round-Trip: `append_slice` + `query_as` (10K structs)", 10_000, 64, 7, bench_json_tag_roundtrip_10k))
 	append(&results, run_timed("4b. Native `STRUCT(...)` Child Vector Write+Read (200K structs)", 200_000, 25, 7, bench_native_struct_vector_200k))
 	append(&results, run_timed("4c. Nested `LIST(BIGINT)` Vector Write+Read (200K lists / 800K items)", 200_000, 48, 7, bench_nested_list_vector_200k))
 	append(&results, run_timed("4d. Fixed `ARRAY(DOUBLE, 4)` Vector Write+Read (200K arrays / 800K f64)", 200_000, 32, 7, bench_nested_array_vector_200k))
-	append(&results, run_timed("4e. Composite Values: `VARIANT`/`MAP`/`UNION`/`DECIMAL` (10K ops)", 10_000, 0, 5, bench_complex_composite_types_and_variant_10k))
+	append(&results, run_timed("4e. Composite Values: `VARIANT`/`MAP`/`UNION`/`DECIMAL` (10K ops)", 10_000, 0, 7, bench_complex_composite_types_and_variant_10k))
 
-	append(&results, run_timed("5a. DSL: `query_to_sql` Pipeline Compilation (100K queries)", 100_000, 0, 5, bench_dsl_query_to_sql_100k))
-	append(&results, run_timed("5b. Codegen: `introspect_table_schema` + Odin/CUE (1K tables)", 1_000, 0, 5, bench_schema_introspect_and_codegen_1k))
-	append(&results, run_timed("5c. Parser: `sqllogic_parse_script` (50K directives / 1K scripts)", 50_000, 0, 5, bench_sqllogic_parse_50k))
-	append(&results, run_timed("5d. Lexer: Native C API v2 `duckdb_v2_tokenize_sql` (300K tokens)", 300_000, 0, 5, bench_v2_tokenize_sql_300k))
-	append(&results, run_timed("5e. Catalog: `duckdb_v2_connection_describe_table` (5K lookups)", 5_000, 0, 5, bench_catalog_describe_table_5k))
-	append(&results, run_timed("5f. Quack: SQL Builders + URI Normalize + Template (100K ops)", 100_000, 0, 5, bench_quack_builders_uri_and_template_100k))
-	append(&results, run_timed("5g. Reflection DDL: `create_table_sql` + `v2_quote_identifier` (100K)", 100_000, 0, 5, bench_ddl_create_table_and_quote_ident_100k))
+	append(&results, run_timed("5a. DSL: `query_to_sql` Pipeline Compilation (100K queries)", 100_000, 0, 7, bench_dsl_query_to_sql_100k))
+	append(&results, run_timed("5b. Codegen: `introspect_table_schema` + Odin/CUE (1K tables)", 1_000, 0, 7, bench_schema_introspect_and_codegen_1k))
+	append(&results, run_timed("5c. Parser: `sqllogic_parse_script` (50K directives / 1K scripts)", 50_000, 0, 7, bench_sqllogic_parse_50k))
+	append(&results, run_timed("5d. Lexer: Native C API v2 `duckdb_v2_tokenize_sql` (300K tokens)", 300_000, 0, 7, bench_v2_tokenize_sql_300k))
+	append(&results, run_timed("5e. Catalog: `duckdb_v2_connection_describe_table` (5K lookups)", 5_000, 0, 7, bench_catalog_describe_table_5k))
+	append(&results, run_timed("5f. Quack: SQL Builders + URI Normalize + Template (100K ops)", 100_000, 0, 7, bench_quack_builders_uri_and_template_100k))
+	append(&results, run_timed("5g. Reflection DDL: `create_table_sql` + `v2_quote_identifier` (100K)", 100_000, 0, 7, bench_ddl_create_table_and_quote_ident_100k))
 
 	append(&results, run_timed("6a. UDF: Vectorized Scalar Callback `odin_fma` (1M rows)", 1_000_000, 24, 7, bench_udf_scalar_1m))
 	append(&results, run_timed("6b. UDF: Streaming Table Function `odin_gen_series` (1M rows)", 1_000_000, 16, 7, bench_udf_table_1m))
 	append(&results, run_timed("6c. UDF: Grouped Hash Aggregate `odin_agg_sum` (1M rows)", 1_000_000, 8, 7, bench_udf_aggregate_1m))
 	append(&results, run_timed("6d. UDF: Table Function Projection + Filter Pushdown (1M rows)", 1_000_000, 16, 7, bench_udf_table_pushdown_1m))
 	append(&results, run_timed("6e. UDF: Custom Type & Vectorized `V2_Cast_Function` (1M rows)", 1_000_000, 16, 7, bench_udf_custom_cast_1m))
-	append(&results, run_timed("6f. UDF: `V2_Replacement_Scan` Virtual Table Scan (1K queries)", 1_000, 0, 5, bench_replacement_scan_collection_1k))
-	append(&results, run_timed("6g. Extensibility: `V2_Pragma` + `V2_Custom_Option` + `V2_Macro` (1K)", 1_000, 0, 5, bench_pragma_custom_option_and_macro_1k))
+	append(&results, run_timed("6f. UDF: `V2_Replacement_Scan` Virtual Table Scan (1K queries)", 1_000, 0, 7, bench_replacement_scan_collection_1k))
+	append(&results, run_timed("6g. Extensibility: `V2_Pragma` + `V2_Custom_Option` + `V2_Macro` (1K)", 1_000, 0, 7, bench_pragma_custom_option_and_macro_1k))
 
-	append(&results, run_timed("7a. Point Lookup: Ad-Hoc `v2_query` Parse+Bind+Exec (1K queries)", 1_000, 0, 5, bench_point_lookup_adhoc_1k))
-	append(&results, run_timed("7b. Point Lookup: Pre-Compiled `v2_prepared_execute` (1K queries)", 1_000, 0, 5, bench_point_lookup_prepared_1k))
-	append(&results, run_timed("7c. DSL Pipeline: `query_execute_as` Build+Bind+Unmarshal (1K)", 1_000, 37, 5, bench_dsl_query_execute_as_1k))
-	append(&results, run_timed("7d. Transactions: `v2_with_transaction` Commit + Rollback (1K tx)", 1_000, 0, 5, bench_v2_with_transaction_1k))
-	append(&results, run_timed("7e. Prepared DSL: `prepared_query_execute_as` Cached Plan+Schema (1K)", 1_000, 37, 5, bench_dsl_prepared_query_execute_as_1k))
+	append(&results, run_timed("7a. Point Lookup: Ad-Hoc `v2_query` Parse+Bind+Exec (1K queries)", 1_000, 0, 7, bench_point_lookup_adhoc_1k))
+	append(&results, run_timed("7b. Point Lookup: Pre-Compiled `v2_prepared_execute` (1K queries)", 1_000, 0, 7, bench_point_lookup_prepared_1k))
+	append(&results, run_timed("7c. DSL Pipeline: `query_execute_as` Build+Bind+Unmarshal (1K)", 1_000, 37, 7, bench_dsl_query_execute_as_1k))
+	append(&results, run_timed("7d. Transactions: `v2_with_transaction` Commit + Rollback (1K tx)", 1_000, 0, 7, bench_v2_with_transaction_1k))
+	append(&results, run_timed("7e. Prepared DSL: `prepared_query_execute_as` Cached Plan+Schema (1K)", 1_000, 37, 7, bench_dsl_prepared_query_execute_as_1k))
 
-	append(&results, run_timed("8a. VFS: Positional `write_at` + `read_at` (1K x 64 KB = 64 MB)", 1_000, 65536, 5, bench_vfs_positional_io_1k))
-	append(&results, run_timed("8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops)", 10_000, 0, 5, bench_query_metrics_and_log_sink_10k))
+	append(&results, run_timed("8a. VFS: Positional `write_at` + `read_at` (1K x 64 KB = 64 MB)", 1_000, 65536, 7, bench_vfs_positional_io_1k))
+	append(&results, run_timed("8b. Telemetry: `V2_Query_Metrics` Tree + `V2_Log_Sink` (10K ops)", 10_000, 0, 7, bench_query_metrics_and_log_sink_10k))
 
 	if !g_quiet {
 		fmt.println("=========================================================================================================================================================================")
