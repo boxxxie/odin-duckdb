@@ -10,3 +10,7 @@ tests.bin
 *.duckdb.wal
 .tmp/
 references/
+
+# Hugi Packets
+*.hpk
+*.bpk

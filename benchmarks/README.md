@@ -1,32 +1,67 @@
 # odin-duckdb Benchmarks
 
-This directory contains the 48-benchmark statistical performance suite for `odin-duckdb`, measuring throughput ($\text{ops/sec}$), bandwidth ($\text{MB/s}$ / $\text{GB/s}$), median/mean latency ($\text{ns/op}$), and sample variance ($\pm\sigma$, $\text{CV}\%$, $\text{IQR}$, $\text{p95}$, $\text{p99}$, $\text{min..max}$) across the DuckDB 2.0 C API v2 (`duckdb/capi_v2.odin`), Arrow C Data Interface bridge (`duckdb/arrow.odin`), `core:reflect` struct unmarshaling and appenders (`duckdb/reflect.odin`), composable query DSL (`duckdb/dsl.odin`), schema codegen (`duckdb/codegen.odin`), and Quack extension utilities (`duckdb/quack.odin`).
+This directory contains the 48-benchmark statistical performance suite for `odin-duckdb`, measuring throughput (`ops/sec`), bandwidth (`MB/s` / `GB/s`), median/mean latency (`ns/op`), and sample variance (`±σ`, `CV%`, `IQR`, `p95`, `p99`, `min..max`) across the DuckDB 2.0 C API v2 (`duckdb/capi_v2.odin`), Arrow C Data Interface bridge (`duckdb/arrow.odin`), `core:reflect` struct unmarshaling and appenders (`duckdb/reflect.odin`), composable query DSL (`duckdb/dsl.odin`), schema codegen (`duckdb/codegen.odin`), and Quack extension utilities (`duckdb/quack.odin`).
 
 ---
 
 ## Running the Benchmarks
 
-Always compile benchmarks with `-o:speed` (and `-microarch:native`). By default, each benchmark executes **1 warmup pass** followed by **5–7 measured trials** (`--warmup 1`) and automatically tags results with the current Git commit SHA:
+Always compile benchmarks with `-o:speed` (and `-microarch:native`). The recommended runner is [`hugi`](../ols.json), which compiles and runs `benchmarks/bench_main.odin`, captures exact integer batch nanosecond samples (`HPKT` binary packets), and ingests results into [`benchmarks/history.hugidb`](history.hugidb):
 
 ```bash
-LD_LIBRARY_PATH=/home/pauli/.local/lib odin run benchmarks -o:speed -microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib"
+# Run the full 48-benchmark suite via hugi and ingest into benchmarks/history.hugidb
+hugi run benchmarks --runs 5 --warmup 1 \
+  --extra-build-flags '-microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib"'
+
+# Smoke-test a subset in-memory using an overlay branch without modifying benchmarks/history.hugidb
+hugi run benchmarks --overlay --runs 1 --warmup 0 --groups scan --filter "2a.|2b." \
+  --extra-build-flags '-microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib"'
 ```
 
-You can customize the number of measured trials, warmup passes, commit SHA, run ID, or append multiple runs for the same commit:
+You can also invoke the benchmark binary directly with `odin run` (when `--packet-out` is omitted, `bench_main.odin` emits JSONL records to `benchmarks/odin.jsonl` and `benchmarks/history.jsonl` as before):
 
 ```bash
-# Run 10 measured trials after 2 warmup passes
-LD_LIBRARY_PATH=/home/pauli/.local/lib odin run benchmarks -o:speed -microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib" -- --runs 10 --warmup 2
-
-# Append an additional run session to odin.jsonl & history.jsonl for the current commit
-LD_LIBRARY_PATH=/home/pauli/.local/lib odin run benchmarks -o:speed -microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib" -- --runs 5 --append
+LD_LIBRARY_PATH=/home/pauli/.local/lib odin run benchmarks -collection:hugi=../hugi/hugi -o:speed -microarch:native \
+  -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib" -- --runs 5 --warmup 1
 ```
 
-Or use the statistical runner & analyzer script directly:
+### Compressed Store, Regression Comparison & `hugi` Workflows
+
+[`benchmarks/history.hugidb`](history.hugidb) stores multi-commit benchmark histories in a compressed transactional `xitdb` database (`CZPK` / `CZCH` cold rollups with exact fixed-point femtosecond `i64` timings):
 
 ```bash
-./benchmarks/compare_1v1.py --runs 5 --warmup 1
+# Inspect commit and run history
+hugi history --db benchmarks/history.hugidb --runs
+
+# Inspect quantiles, CV%, and footprints for matching benchmarks
+hugi inspect --db benchmarks/history.hugidb "append_slice"
+
+# Compare the last two commits (or specify --commits <base>..<cand>) via Welch t-test / Mann-Whitney U
+hugi compare --last --db benchmarks/history.hugidb
+
+# Backfill legacy JSONL logs into history.hugidb and compact cold rollups
+hugi ingest --db benchmarks/history.hugidb benchmarks/history.jsonl
+hugi compact --db benchmarks/history.hugidb --keep-hot 0
 ```
+
+### DuckDB-on-Parquet Analytics (`query_hugidb.sql`)
+
+Export the full commit series from `benchmarks/history.hugidb` to Apache Parquet (`DECIMAL(18,6)` timings + compressed sample blobs) and analyze latency-tiered bandwidth and commit trends directly with DuckDB SQL ([`benchmarks/query_hugidb.sql`](query_hugidb.sql)):
+
+```bash
+hugi export --db benchmarks/history.hugidb --all-commits --out .tmp/history.parquet
+duckdb -markdown -light-mode -f benchmarks/query_hugidb.sql
+```
+
+### Regenerating README Tables (`update_readme.sh`)
+
+To regenerate the latency-tiered bandwidth tables in both `benchmarks/README.md` and the root `README.md` (optionally targeting a commit prefix):
+
+```bash
+./benchmarks/update_readme.sh [commit_sha]
+```
+
+When `benchmarks/history.hugidb` and `hugi` are available, `update_readme.sh` streams `hugi export --db benchmarks/history.hugidb --all-commits --format jsonl --out -` into `jq -s` (and falls back automatically to `benchmarks/history.jsonl` / `benchmarks/odin.jsonl` otherwise).
 
 ### Selective Execution & Git-Diff Impact Mapping (`--plan` / `--affected` / `--groups` / `--filter`)
 
@@ -40,51 +75,21 @@ When optimizing specific subsystems or procedures, you do not need to re-run all
 ./benchmarks/compare_1v1.py --plan HEAD~1..HEAD
 
 # Automatically execute ONLY the benchmarks affected by your code changes
-# (updates the re-run ranks in benchmarks/odin.jsonl in-place while preserving untouched ranks)
 ./benchmarks/compare_1v1.py --affected
 
-# Or manually select benchmark groups (ingest,scan,bytes,nested,dsl_codegen,udf,point_tx,vfs_telemetry) or name substrings:
-./benchmarks/compare_1v1.py --groups dsl_codegen,point_tx --filter "5a.|7c.|7e."
+# Or manually pass --groups / --filter to hugi run or compare_1v1.py
+hugi run benchmarks --groups dsl_codegen,point_tx --filter "5a.|7c.|7e." \
+  --extra-build-flags '-microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib"'
 ```
 
 When a selective benchmark run is recorded for a commit, `./benchmarks/update_readme.sh` automatically:
 1. Places **Section 1 (Latest Code-Change Impact & Affected Benchmarks)** at the top of the report, showing the inspected diff, changed files/procedures, and latency-tiered progression tables (`1.1`, `1.2`, `1.3`) for the re-run benchmarks against their immediate prior baseline.
 2. Marks selectively re-run benchmarks with **↻** in the `#` rank column of **Section 2 (Odin Full Suite Results)** while retaining the latest verified baseline for untouched benchmarks.
 
-### Multi-Run Pooling, Commit History & Regression Analysis (`history.jsonl`)
-
-Every benchmark run writes enriched JSONL records (one JSON object per benchmark line) to:
-- `benchmarks/odin.jsonl` (latest Odin snapshot, or accumulated runs with `--append`)
-- `benchmarks/history.jsonl` (append-only multi-commit, multi-run history log)
-
-Each JSONL line captures the Git commit SHA, run session ID, summary statistics, quantiles, and the raw `samples_ns` array:
-```json
-{"rank":1,"lang":"odin","commit":"9ec3509e84e6","run_id":"run-1793604825","name":"1a. Ingest: V2 Prepared Statement Loop (2K rows)","ops":2000,"rows":2000,"runs":5,"iterations":5,"warmup":1,"total_ms":305.839,"ns_per_op":152919.60,"ns_per_item":152919.60,"mean_ns":153461.98,"median_ns":152919.60,"stddev_ns":3765.62,"variance_ns2":14180000.00,"cv_pct":2.45,"min_ns":149080.42,"max_ns":158014.01,"iqr_ns":5733.30,"p95_ns":157714.07,"p99_ns":157954.02,"ops_per_sec":6539.38,"mb_per_sec":0.23,"bytes_row":37,"bytes_used":74000,"samples_ns":[158014.01,150481.20,152919.60,149080.42,156814.50]}
-```
-
-When multiple runs are recorded for the same `(commit, lang, name)`, `compare_1v1.py` and `update_readme.sh` automatically **pool all `samples_ns` arrays** across those runs and recompute unified variance metrics:
-
-```bash
-# List all commits, run sessions, and pooled sample counts in history.jsonl
-./benchmarks/compare_1v1.py --list-commits
-
-# Inspect individual runs, quantiles (IQR, p95, p99), and raw sample arrays for matching tests
-./benchmarks/compare_1v1.py --inspect "append_slice"
-
-# Compare two Git commits for statistically significant speedups or regressions (Welch's t/z test)
-./benchmarks/compare_1v1.py --compare-commits <baseline_sha> <candidate_sha>
-```
-
-`.gitattributes` configures `*.jsonl diff=jsonl`. To get human-readable `git diff` output on `.jsonl` files, configure the `jsonl` textconv driver in your local Git config:
+`.gitattributes` configures `*.jsonl diff=jsonl`. To get human-readable `git diff` output on legacy `.jsonl` files, configure the `jsonl` textconv driver in your local Git config:
 
 ```bash
 git config diff.jsonl.textconv "jq -r '\"#\\(.rank) [\\(.commit // \"?\")] \\(.name) | \\(.ns_per_op) ± \\(.stddev_ns // 0) ns/op (CV \\(.cv_pct // 0)%, n=\\(.runs // 1)) | \\(.ops_per_sec) ops/sec\"'"
-```
-
-To regenerate the reference tables in both `benchmarks/README.md` and the root `README.md` from `benchmarks/history.jsonl` and `benchmarks/odin.jsonl` (optionally filtering by commit prefix):
-
-```bash
-./benchmarks/update_readme.sh [commit_sha]
 ```
 
 ---

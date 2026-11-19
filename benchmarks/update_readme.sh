@@ -3,28 +3,73 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HISTORY_DB="${SCRIPT_DIR}/history.hugidb"
 ODIN_JSONL="${SCRIPT_DIR}/odin.jsonl"
 HISTORY_JSONL="${SCRIPT_DIR}/history.jsonl"
 BENCH_README="${SCRIPT_DIR}/README.md"
 ROOT_README="${ROOT_DIR}/README.md"
 TARGET_COMMIT="${1:-}"
 
-INPUT_FILES=()
-if [[ -f "${HISTORY_JSONL}" ]]; then
-    INPUT_FILES+=("${HISTORY_JSONL}")
+HUGI_BIN="${HUGI_BIN:-}"
+if [[ -n "${HUGI_BIN}" && ! -x "${HUGI_BIN}" ]]; then
+    HUGI_BIN="$(command -v "${HUGI_BIN}" 2>/dev/null || true)"
 fi
-if [[ -f "${ODIN_JSONL}" ]]; then
-    INPUT_FILES+=("${ODIN_JSONL}")
+if [[ -z "${HUGI_BIN}" ]]; then
+    if [[ -x "/home/pauli/.local/bin/hugi" ]]; then
+        HUGI_BIN="/home/pauli/.local/bin/hugi"
+    else
+        HUGI_BIN="$(command -v hugi 2>/dev/null || true)"
+    fi
 fi
 
-if [[ ${#INPUT_FILES[@]} -eq 0 ]]; then
-    echo "Error: Neither ${ODIN_JSONL} nor ${HISTORY_JSONL} found. Run 'odin run benchmarks -o:speed' first." >&2
-    exit 1
+USE_HUGIDB=0
+if [[ -f "${HISTORY_DB}" && -n "${HUGI_BIN}" && -x "${HUGI_BIN}" ]]; then
+    USE_HUGIDB=1
+fi
+
+INPUT_FILES=()
+if [[ "${USE_HUGIDB}" -eq 0 ]]; then
+    if [[ -f "${HISTORY_JSONL}" ]]; then
+        INPUT_FILES+=("${HISTORY_JSONL}")
+    fi
+    if [[ -f "${ODIN_JSONL}" ]]; then
+        INPUT_FILES+=("${ODIN_JSONL}")
+    fi
+    if [[ ${#INPUT_FILES[@]} -eq 0 ]]; then
+        echo "Error: Neither ${HISTORY_DB} nor ${ODIN_JSONL}/${HISTORY_JSONL} found. Run 'hugi run benchmarks' first." >&2
+        exit 1
+    fi
 fi
 
 PLAN_JSON="$("${SCRIPT_DIR}/compare_1v1.py" --plan-json 2>/dev/null || echo '{}')"
 
-TABLES=$(jq -rn --arg target_commit "${TARGET_COMMIT}" --argjson plan "${PLAN_JSON}" '
+JQ_PROGRAM=$(cat <<'EOF'
+def normalize_record:
+  (.ops_per_sample // .ops // .rows // 1) as $ops |
+  (.bytes_per_op // .bytes_row // 0) as $bytes_row |
+  (.p50_ns // .median_ns // .ns_per_op // 0) as $med_ns |
+  (if (.name // "") != "" then .name else .full_name end) as $name |
+  . + {
+    name: $name,
+    ops: $ops,
+    rows: $ops,
+    runs: (.runs // .samples // ((.samples_ns // []) | length) // 1),
+    run_count: (.run_count // 1),
+    median_ns: $med_ns,
+    ns_per_op: (.ns_per_op // $med_ns),
+    stddev_ns: (.std_dev_ns // .stddev_ns // 0),
+    bytes_row: $bytes_row,
+    bytes_used: (.footprint_bytes // .bytes_used // ($ops * $bytes_row)),
+    min_ns: (.min_ns // $med_ns),
+    max_ns: (.max_ns // $med_ns),
+    iqr_ns: (.iqr_ns // 0),
+    p95_ns: (.p95_ns // $med_ns),
+    p99_ns: (.p99_ns // $med_ns),
+    ops_per_sec: (.ops_per_sec // (if $med_ns > 0 then (1e9 / $med_ns) else 0 end)),
+    mb_per_sec: (.mb_per_sec // (if $bytes_row > 0 and $med_ns > 0 then (((1e9 / $med_ns) * $bytes_row) / (1024.0 * 1024.0)) else 0 end)),
+    cv_pct: (.cv_pct // 0)
+  };
+
 def commify:
   tostring |
   if test("^-?[0-9]+$") then
@@ -180,7 +225,7 @@ def pool_records($recs):
     rank: $first.rank,
     lang: ($first.lang // "odin"),
     commit: ($first.commit // "unknown"),
-    invocations: ($uniq_recs | length),
+    invocations: ([ $uniq_recs[] | (.run_count // 1) ] | add),
     name: $first.name,
     ops: $ops,
     runs: $n,
@@ -304,7 +349,7 @@ def progression_table($rows; $prev_sha; $curr_sha; $unit):
     "| \($curr.rank) | `\($curr.name | gsub("`"; "") | nbsp)` | \($verdict) | `\($delta_str)` | \(fmt_speedup($curr.median_ns; $base.median_ns)) | \($b_med) | **\($c_med)** | `\(fmt_dec1($wz))` | \($b_msd) | \($c_msd) |"
   );
 
-[inputs] as $all |
+map(normalize_record) as $all |
 distinct_commits($all; "odin") as $odin_commits |
 (if $target_commit != "" then
   ($odin_commits | map(select(startswith($target_commit))) | last // $target_commit)
@@ -356,7 +401,14 @@ latest_snapshot_for_lang($all; "odin"; $odin_sha) as $odin_list |
    else empty end)
  else empty end),
 single_lang_section((if ($odin_commits | length) >= 2 then "2" else "1" end); "Odin Full Suite"; "-o:speed -microarch:native"; $odin_sha; $odin_list)
-' "${INPUT_FILES[@]}")
+EOF
+)
+
+if [[ "${USE_HUGIDB}" -eq 1 ]]; then
+    TABLES=$("${HUGI_BIN}" export --db "${HISTORY_DB}" --all-commits --format jsonl --out - | jq -rs --arg target_commit "${TARGET_COMMIT}" --argjson plan "${PLAN_JSON}" "${JQ_PROGRAM}")
+else
+    TABLES=$(jq -rs --arg target_commit "${TARGET_COMMIT}" --argjson plan "${PLAN_JSON}" "${JQ_PROGRAM}" "${INPUT_FILES[@]}")
+fi
 
 AWK_SCRIPT='
 BEGIN { in_block = 0 }

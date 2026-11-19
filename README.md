@@ -262,7 +262,7 @@ defer duckdb.arrow_stream_release(&stream)
 | `duckdb:"col_name,json"` | Emits `JSON` column type and marshals/unmarshals nested Odin structs/slices via `core:encoding/json`. |
 | `duckdb:"-"` | Ignores the field completely during DDL generation, bulk appending, and row unmarshaling. |
 
-### Odin $\leftrightarrow$ DuckDB Type Mapping
+### Odin ↔ DuckDB Type Mapping
 
 | Odin Type | DuckDB SQL Type | C API v2 `V2_Logical_Type_Id` |
 | :--- | :--- | :--- |
@@ -291,7 +291,11 @@ odin-duckdb/
 │   ├── dsl.odin        # Composable Friendly SQL & Quack relational query builder
 │   ├── quack.odin      # Quack server/secret/attach SQL builders & SQLLogicTest parser
 │   └── codegen.odin    # Zero-execution table schema introspection & Odin/CUE codegen
-├── benchmarks/         # Throughput & latency benchmark suite (bench_main.odin)
+├── benchmarks/         # 48-benchmark suite, hugi history store & DuckDB-on-Parquet SQL
+│   ├── bench_main.odin # Benchmark harness emitting HPKT run packets & JSONL logs
+│   ├── history.hugidb  # Compressed xitdb multi-commit benchmark history
+│   ├── query_hugidb.sql# DuckDB SQL analytics over exported Parquet history
+│   └── update_readme.sh# Latency-tiered Markdown table generator
 └── tests/              # 4-Layer ATDD Executable Specifications
     ├── dsl.odin        # Layer 2: Scoped V2 environment fixture with zero-leak verification
     ├── drivers.odin    # Layer 3: Protocol drivers for C API v2 & Arrow
@@ -304,25 +308,31 @@ odin-duckdb/
 ## Running Checks, Tests & Benchmarks
 
 ```bash
-# Type-check the library package without an entry point
+# Type-check the library package and benchmark harness
 odin check duckdb -no-entry-point
+odin check benchmarks -collection:hugi=../hugi/hugi
 
 # Run the full ATDD executable specification suite
 odin test tests
 
-# Run the statistical benchmark suite (writes to benchmarks/odin.jsonl and appends to benchmarks/history.jsonl)
-odin run benchmarks -o:speed -microarch:native -- --runs 5 --warmup 1
+# Run the statistical benchmark suite via hugi (stores exact batch samples in benchmarks/history.hugidb)
+hugi run benchmarks --runs 5 --warmup 1 \
+  --extra-build-flags '-microarch:native -extra-linker-flags:"-L/home/pauli/.local/lib -Wl,-rpath,/home/pauli/.local/lib"'
 
-# Or run via the statistical runner/analyzer (supports --list-commits, --inspect, --compare-commits)
-./benchmarks/compare_1v1.py --runs 5 --warmup 1
+# Compare the last two commits for speedups or regressions
+hugi compare --last --db benchmarks/history.hugidb
 
 # Regenerate the latency-tiered statistical tables in benchmarks/README.md and README.md
 ./benchmarks/update_readme.sh
+
+# Export history to Apache Parquet and query latency tiers & commit trends with DuckDB SQL
+hugi export --db benchmarks/history.hugidb --all-commits --out .tmp/history.parquet
+duckdb -markdown -light-mode -f benchmarks/query_hugidb.sql
 ```
 
 ### Baseline Benchmark Results (`-o:speed -microarch:native`)
 
-Each run of `odin run benchmarks -o:speed -microarch:native` writes 48 enriched JSONL records (with Git `commit`, `run_id`, `median_ns`, `mean_ns`, `stddev_ns`, `variance_ns2`, `cv_pct`, `iqr_ns`, `p95_ns`, `p99_ns`, `min_ns`, `max_ns`, `ops_per_sec`, `mb_per_sec`, and raw `samples_ns`) to [`benchmarks/odin.jsonl`](benchmarks/odin.jsonl) and appends to [`benchmarks/history.jsonl`](benchmarks/history.jsonl) for multi-run sample pooling, Welch's $z$-test commit regression analysis ([`./benchmarks/compare_1v1.py`](benchmarks/compare_1v1.py)), automatic latency-tiered table generation ([`./benchmarks/update_readme.sh`](benchmarks/update_readme.sh)), and DuckDB-native querying (`SELECT * FROM 'benchmarks/history.jsonl'`). See [`benchmarks/README.md`](benchmarks/README.md) for full details.
+`hugi run benchmarks` captures exact integer batch nanosecond samples (`HPKT` packets) and stores pooled multi-commit history in [`benchmarks/history.hugidb`](benchmarks/history.hugidb) alongside legacy JSONL logs ([`benchmarks/odin.jsonl`](benchmarks/odin.jsonl), [`benchmarks/history.jsonl`](benchmarks/history.jsonl)). Use `hugi compare --last` for Welch `t`-test / Mann-Whitney U regression analysis, [`./benchmarks/update_readme.sh`](benchmarks/update_readme.sh) to regenerate the latency-tiered bandwidth tables below, and [`benchmarks/query_hugidb.sql`](benchmarks/query_hugidb.sql) to query exported Parquet histories (`DECIMAL(18,6)` timings) directly in DuckDB. See [`benchmarks/README.md`](benchmarks/README.md) for full details.
 
 <!-- BEGIN_BENCHMARK_TABLE -->
 ### 1. Odin Full Suite Results (`-o:speed -microarch:native`, Commit `9ec3509e84e6`, 5 samples across 1 run(s))
