@@ -57,6 +57,10 @@ g_history_file:     ^os.File
 g_bench_rank:       int
 g_runs:             int = 0 // 0 = use per-benchmark default unless overridden by --runs
 g_warmup:           int = 1
+g_pin_cpu:          int = -1
+g_counters:         bool = false
+g_test_mode:        bool = false
+g_host_warned:      bool = false
 g_commit_sha:       string = "unknown"
 g_run_id:           string = "run-0"
 g_lang:             string = "odin"
@@ -101,6 +105,18 @@ parse_cli_args :: proc() {
 			g_quiet = true
 			continue
 		}
+		if arg == "--test" || arg == "-test" {
+			g_test_mode = true
+			continue
+		}
+		if arg == "--counters" || arg == "-counters" {
+			g_counters = true
+			continue
+		}
+		if arg == "--host-warned" || arg == "-host-warned" {
+			g_host_warned = true
+			continue
+		}
 		if !strings.has_prefix(arg, "-") {
 			continue
 		}
@@ -115,7 +131,7 @@ parse_cli_args :: proc() {
 		}
 		consume_val := false
 		switch key {
-		case "runs", "warmup", "commit", "run-id", "lang", "packet-out", "output", "history", "groups", "group", "filter", "f":
+		case "runs", "warmup", "pin", "commit", "run-id", "lang", "packet-out", "output", "history", "groups", "group", "filter", "f":
 			consume_val = true
 		}
 		if !consume_val {
@@ -136,6 +152,10 @@ parse_cli_args :: proc() {
 		case "warmup":
 			if v, ok := strconv.parse_int(val); ok && v >= 0 {
 				g_warmup = v
+			}
+		case "pin":
+			if v, ok := strconv.parse_int(val); ok && v >= 0 {
+				g_pin_cpu = v
 			}
 		case "commit":
 			if val != "" {
@@ -171,6 +191,10 @@ parse_cli_args :: proc() {
 				g_selective_run = true
 			}
 		}
+	}
+	if g_test_mode {
+		g_runs = 1
+		g_warmup = 0
 	}
 }
 
