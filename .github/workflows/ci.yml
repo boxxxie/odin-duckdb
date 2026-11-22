@@ -18,6 +18,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Checkout hugi v0.1.4 (runner only)
+        uses: actions/checkout@v4
+        with:
+          repository: boxxxie/hugi
+          ref: v0.1.4
+          path: .tmp/hugi
+          persist-credentials: false
+
+      - name: Init hugi obench submodule
+        run: git -C .tmp/hugi submodule update --init deps/obench
+
       - name: Setup Odin
         uses: laytan/setup-odin@v2
         with:
@@ -32,7 +43,7 @@ jobs:
           odin check tests -no-entry-point -define:DUCKDB_V2_STATS=true
 
       - name: Check benchmark suite syntax & types
-        run: odin check benchmarks
+        run: odin check benchmarks -collection:hugi=.tmp/hugi/hugi
 
       - name: Run ATDD specification suite (when libduckdb is installed)
         if: runner.os == 'Linux'
