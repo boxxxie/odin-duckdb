@@ -291,11 +291,11 @@ odin-duckdb/
 │   ├── dsl.odin        # Composable Friendly SQL & Quack relational query builder
 │   ├── quack.odin      # Quack server/secret/attach SQL builders & SQLLogicTest parser
 │   └── codegen.odin    # Zero-execution table schema introspection & Odin/CUE codegen
-├── benchmarks/         # 48-benchmark suite, hugi history store & temple SVG renderer
+├── benchmarks/         # 48-benchmark suite, hugi history store & runa SVG renderer
 │   ├── bench_main.odin # Benchmark harness emitting HPKT run packets & JSONL logs
 │   ├── history.hugidb  # Compressed xitdb multi-commit benchmark history
 │   ├── query_hugidb.sql# DuckDB SQL analytics over exported Parquet history
-│   ├── render/         # Pure-Odin temple AOT templates generating renders/*.svg + README.md
+│   ├── render/         # Pure-Odin runa AOT templates generating renders/*.svg + README.md
 │   └── renders/        # Checked-in SVG benchmark charts
 └── tests/              # 4-Layer ATDD Executable Specifications
     ├── dsl.odin        # Layer 2: Scoped V2 environment fixture with zero-leak verification
@@ -323,8 +323,8 @@ hugi run benchmarks --runs 5 --warmup 1 \
 # Compare the last two commits for speedups or regressions
 hugi compare --last --db benchmarks/history.hugidb
 
-# Regenerate SVG charts in benchmarks/renders/ and tables in benchmarks/README.md using temple
-odin run benchmarks/render -collection:temple=../temple
+# Regenerate SVG charts in benchmarks/renders/ and tables in benchmarks/README.md using runa
+odin run benchmarks/render -collection:runa=../runa
 
 # Export history to Apache Parquet and query latency tiers & commit trends with DuckDB SQL
 hugi export --db benchmarks/history.hugidb --all-commits --out .tmp/history.parquet
@@ -335,7 +335,7 @@ duckdb -markdown -light-mode -f benchmarks/query_hugidb.sql
 
 ![Vectorized Ingest vs Zero-Copy Scan and Arrow Bridge](benchmarks/renders/ingest_and_scan_latency.svg)
 
-`hugi run benchmarks` captures exact integer batch nanosecond samples (`HPKT` packets) and stores pooled multi-commit history in [`benchmarks/history.hugidb`](benchmarks/history.hugidb). Use `odin run benchmarks/render -collection:temple=../temple` to regenerate all 3 SVG charts under [`benchmarks/renders/`](benchmarks/renders/) and the full 48-benchmark statistical breakdown in [`benchmarks/README.md`](benchmarks/README.md), or use [`benchmarks/query_hugidb.sql`](benchmarks/query_hugidb.sql) to query exported Parquet histories directly in DuckDB.
+`hugi run benchmarks` captures exact integer batch nanosecond samples (`HPKT` packets) and stores pooled multi-commit history in [`benchmarks/history.hugidb`](benchmarks/history.hugidb). Use `odin run benchmarks/render -collection:runa=../runa` to regenerate all 3 SVG charts under [`benchmarks/renders/`](benchmarks/renders/) and the full 48-benchmark statistical breakdown in [`benchmarks/README.md`](benchmarks/README.md), or use [`benchmarks/query_hugidb.sql`](benchmarks/query_hugidb.sql) to query exported Parquet histories directly in DuckDB.
 
 ---
 

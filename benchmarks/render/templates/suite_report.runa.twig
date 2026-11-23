@@ -2,7 +2,7 @@
 
 # odin-duckdb Benchmarks & Visual Renders
 
-Pure-Odin statistical performance suite for **odin-duckdb** (`{{ this.total_benchmarks | int }}` benchmarks across `{{ this.group_count | int }}` groups, `{{ this.total_samples_str | raw }}` samples at commit `{{ this.commit | raw }}` in [`history.hugidb`](history.hugidb)), measuring DuckDB 2.0 C API v2 ingestion, zero-copy vector scans, Arrow C Data Interface round-trips, `core:reflect` appenders/unmarshaling, vectorized Odin UDFs, query DSL compilation, VFS I/O, and transactions—with visual SVG charts rendered via [`temple`](https://github.com/boxxxie/temple) under [`renders/`](renders/).
+Pure-Odin statistical performance suite for **odin-duckdb** (`{{ this.total_benchmarks | int }}` benchmarks across `{{ this.group_count | int }}` groups, `{{ this.total_samples_str | raw }}` samples at commit `{{ this.commit | raw }}` in [`history.hugidb`](history.hugidb)), measuring DuckDB 2.0 C API v2 ingestion, zero-copy vector scans, Arrow C Data Interface round-trips, `core:reflect` appenders/unmarshaling, vectorized Odin UDFs, query DSL compilation, VFS I/O, and transactions—with visual SVG charts rendered via [`runa`](https://github.com/boxxxie/runa) under [`renders/`](renders/).
 
 ---
 
@@ -40,8 +40,8 @@ hugi compare --last --db benchmarks/history.hugidb
 hugi export --db benchmarks/history.hugidb --all-commits --out .tmp/history.parquet
 duckdb -markdown -light-mode -f benchmarks/query_hugidb.sql
 
-# 5. Regenerate SVG charts in benchmarks/renders/ and tables below using temple AOT templates
-odin run benchmarks/render -collection:temple=../temple
+# 5. Regenerate SVG charts in benchmarks/renders/ and tables below using runa AOT templates
+odin run benchmarks/render -collection:runa=../runa
 ```
 
 ---
