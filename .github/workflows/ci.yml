@@ -18,18 +18,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Checkout temple v1.0.0
+      - name: Checkout temple
         if: runner.os == 'Linux'
         uses: actions/checkout@v4
         with:
           repository: boxxxie/temple
-          ref: v1.0.0
+          ref: main
           path: .tmp/temple
           persist-credentials: false
+
+      - name: Checkout hugi v0.2.0 (runner only)
+        uses: actions/checkout@v4
+        with:
+          repository: boxxxie/hugi
+          ref: v0.2.0
+          path: .tmp/hugi
+          persist-credentials: false
+
+      - name: Init hugi obench submodule
+        run: git -C .tmp/hugi submodule update --init deps/obench
 
       - name: Setup Odin
         uses: laytan/setup-odin@v2
         with:
+          release: dev-2026-10
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check library package syntax & types
@@ -41,7 +53,7 @@ jobs:
           odin check tests -no-entry-point -define:DUCKDB_V2_STATS=true
 
       - name: Check benchmark suite syntax & types
-        run: odin check benchmarks
+        run: odin check benchmarks -collection:hugi=.tmp/hugi/hugi -collection:obench=.tmp/hugi/deps/obench/obench
 
       - name: Verify temple benchmark renderer (Linux)
         if: runner.os == 'Linux'
