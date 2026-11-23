@@ -41,7 +41,6 @@ jobs:
       - name: Setup Odin
         uses: laytan/setup-odin@v2
         with:
-          release: dev-2026-10
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check library package syntax & types

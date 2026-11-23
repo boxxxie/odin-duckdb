@@ -1578,7 +1578,13 @@ append_rows_to_collection :: proc(
 					strings.builder_reset(&json_b)
 					if !marshal_json_fast(&json_b, any{field_ptr, f.inner_type.id}) {
 						strings.builder_reset(&json_b)
-						if m_err := json.marshal_to_builder(&json_b, any{field_ptr, f.inner_type.id}, &json_opt); m_err != nil {
+						m_err: json.Marshal_Error
+						when intrinsics.type_is_pointer(intrinsics.type_proc_parameter_type(type_of(json.marshal_to_builder), 2)) {
+							m_err = json.marshal_to_builder(&json_b, any{field_ptr, f.inner_type.id}, &json_opt)
+						} else {
+							m_err = json.marshal_to_builder(&json_b, any{field_ptr, f.inner_type.id}, json_opt)
+						}
+						if m_err != nil {
 							return .TYPE_CONVERSION
 						}
 					}
