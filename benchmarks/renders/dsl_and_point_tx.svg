@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 598" width="960" height="598" role="img" aria-label="Query DSL Compilation, SQL Parser/Lexer, VFS &amp; Transactions">
+<style>
+  .bg { fill: #0d1117; }
+  .panel { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+  .grid { stroke: #21262d; stroke-width: 1; }
+  .title { fill: #f0f6fc; font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .sub { fill: #8b949e; font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .lbl { fill: #c9d1d9; font: 500 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tick { fill: #8b949e; font: 500 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .val { fill: #e6edf3; font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<rect class="bg" width="960" height="598" rx="10"/>
+<rect class="panel" x="270" y="68" width="460" height="488" rx="4"/>
+<text class="title" x="24" y="30">Query DSL Compilation, SQL Parser/Lexer, VFS &amp; Transactions</text>
+<text class="sub" x="24" y="49">Commit eed3bbe02f72 · -o:speed -microarch:native</text>
+<line class="grid" x1="270.0" y1="68" x2="270.0" y2="556"/>
+<text class="tick" x="270.0" y="574" text-anchor="middle">10 ns</text>
+<line class="grid" x1="362.0" y1="68" x2="362.0" y2="556"/>
+<text class="tick" x="362.0" y="574" text-anchor="middle">100 ns</text>
+<line class="grid" x1="454.0" y1="68" x2="454.0" y2="556"/>
+<text class="tick" x="454.0" y="574" text-anchor="middle">1 us</text>
+<line class="grid" x1="546.0" y1="68" x2="546.0" y2="556"/>
+<text class="tick" x="546.0" y="574" text-anchor="middle">10 us</text>
+<line class="grid" x1="638.0" y1="68" x2="638.0" y2="556"/>
+<text class="tick" x="638.0" y="574" text-anchor="middle">100 us</text>
+<line class="grid" x1="730.0" y1="68" x2="730.0" y2="556"/>
+<text class="tick" x="730.0" y="574" text-anchor="middle">1 ms</text>
+<text class="lbl" x="260" y="94.0" text-anchor="end">5d Native v2_tokenize_sql</text>
+<rect x="270" y="81.0" width="56.0" height="20" rx="4" fill="#3fb950"/>
+<text class="val" x="334.0" y="95.0">40.62 ns (24.62M/s)</text>
+<text class="lbl" x="260" y="128.0" text-anchor="end">5c sqllogic_parse_script</text>
+<rect x="270" y="115.0" width="69.2" height="20" rx="4" fill="#3fb950"/>
+<text class="val" x="347.2" y="129.0">56.48 ns (17.71M/s)</text>
+<text class="lbl" x="260" y="162.0" text-anchor="end">5f Quack SQL Builders</text>
+<rect x="270" y="149.0" width="83.2" height="20" rx="4" fill="#79c0ff"/>
+<text class="val" x="361.2" y="163.0">80.25 ns (12.46M/s)</text>
+<text class="lbl" x="260" y="196.0" text-anchor="end">5g Reflection create_table_sql</text>
+<rect x="270" y="183.0" width="120.9" height="20" rx="4" fill="#58a6ff"/>
+<text class="val" x="398.9" y="197.0">205.92 ns (4.86M/s)</text>
+<text class="lbl" x="260" y="230.0" text-anchor="end">5a DSL query_to_sql</text>
+<rect x="270" y="217.0" width="124.7" height="20" rx="4" fill="#58a6ff"/>
+<text class="val" x="402.7" y="231.0">226.96 ns (4.41M/s)</text>
+<text class="lbl" x="260" y="264.0" text-anchor="end">8a VFS write_at + read_at</text>
+<rect x="270" y="251.0" width="216.2" height="20" rx="4" fill="#79c0ff"/>
+<text class="val" x="494.2" y="265.0">2.24 us (27.29 GB/s)</text>
+<text class="lbl" x="260" y="298.0" text-anchor="end">5e Catalog describe_table</text>
+<rect x="270" y="285.0" width="227.7" height="20" rx="4" fill="#d2a8ff"/>
+<text class="val" x="505.7" y="299.0">2.98 us (335.0K/s)</text>
+<text class="lbl" x="260" y="332.0" text-anchor="end">5b Schema Codegen (Odin/CUE)</text>
+<rect x="270" y="319.0" width="244.5" height="20" rx="4" fill="#d2a8ff"/>
+<text class="val" x="522.5" y="333.0">4.55 us (219.8K/s)</text>
+<text class="lbl" x="260" y="366.0" text-anchor="end">8b Telemetry Metrics + Sink</text>
+<rect x="270" y="353.0" width="277.5" height="20" rx="4" fill="#ffa657"/>
+<text class="val" x="555.5" y="367.0">10.39 us (96.2K/s)</text>
+<text class="lbl" x="260" y="400.0" text-anchor="end">7d v2_with_transaction</text>
+<rect x="270" y="387.0" width="377.6" height="20" rx="4" fill="#ffa657"/>
+<text class="val" x="655.6" y="401.0">127.31 us (7.9K/s)</text>
+<text class="lbl" x="260" y="434.0" text-anchor="end">1a V2 Prepared Statement Loop</text>
+<rect x="270" y="421.0" width="383.5" height="20" rx="4" fill="#f78166"/>
+<text class="val" x="661.5" y="435.0">147.40 us (0.2 MB/s)</text>
+<text class="lbl" x="260" y="468.0" text-anchor="end">7b v2_prepared_execute</text>
+<rect x="270" y="455.0" width="392.5" height="20" rx="4" fill="#f78166"/>
+<text class="val" x="670.5" y="469.0">184.56 us (5.4K/s)</text>
+<text class="lbl" x="260" y="502.0" text-anchor="end">7a Ad-Hoc v2_query</text>
+<rect x="270" y="489.0" width="399.9" height="20" rx="4" fill="#ff7b72"/>
+<text class="val" x="677.9" y="503.0">222.04 us (4.5K/s)</text>
+<text class="lbl" x="260" y="536.0" text-anchor="end">7c DSL query_execute_as</text>
+<rect x="270" y="523.0" width="425.8" height="20" rx="4" fill="#ff7b72"/>
+<text class="val" x="703.8" y="537.0">424.79 us (0.1 MB/s)</text>
+</svg>

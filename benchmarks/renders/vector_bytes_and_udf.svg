@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 598" width="960" height="598" role="img" aria-label="Native Vectors, Wire Codecs &amp; Vectorized Odin UDFs">
+<style>
+  .bg { fill: #0d1117; }
+  .panel { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+  .grid { stroke: #21262d; stroke-width: 1; }
+  .title { fill: #f0f6fc; font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .sub { fill: #8b949e; font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .lbl { fill: #c9d1d9; font: 500 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tick { fill: #8b949e; font: 500 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .val { fill: #e6edf3; font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<rect class="bg" width="960" height="598" rx="10"/>
+<rect class="panel" x="270" y="68" width="460" height="488" rx="4"/>
+<text class="title" x="24" y="30">Native Vectors, Wire Codecs &amp; Vectorized Odin UDFs</text>
+<text class="sub" x="24" y="49">Commit eed3bbe02f72 · -o:speed -microarch:native</text>
+<line class="grid" x1="270.0" y1="68" x2="270.0" y2="556"/>
+<text class="tick" x="270.0" y="574" text-anchor="middle">1 ps</text>
+<line class="grid" x1="362.0" y1="68" x2="362.0" y2="556"/>
+<text class="tick" x="362.0" y="574" text-anchor="middle">10 ps</text>
+<line class="grid" x1="454.0" y1="68" x2="454.0" y2="556"/>
+<text class="tick" x="454.0" y="574" text-anchor="middle">100 ps</text>
+<line class="grid" x1="546.0" y1="68" x2="546.0" y2="556"/>
+<text class="tick" x="546.0" y="574" text-anchor="middle">1 ns</text>
+<line class="grid" x1="638.0" y1="68" x2="638.0" y2="556"/>
+<text class="tick" x="638.0" y="574" text-anchor="middle">10 ns</text>
+<line class="grid" x1="730.0" y1="68" x2="730.0" y2="556"/>
+<text class="tick" x="730.0" y="574" text-anchor="middle">100 ns</text>
+<text class="lbl" x="260" y="94.0" text-anchor="end">3d Zero-Copy vector_reference</text>
+<rect x="270" y="81.0" width="73.0" height="20" rx="4" fill="#3fb950"/>
+<text class="val" x="351.0" y="95.0">6.21 ps (2.34 TB/s)</text>
+<text class="lbl" x="260" y="128.0" text-anchor="end">3e Flatten .OTHER -&gt; .FLAT</text>
+<rect x="270" y="115.0" width="218.6" height="20" rx="4" fill="#3fb950"/>
+<text class="val" x="496.6" y="129.0">237.44 ps (31.38 GB/s)</text>
+<text class="lbl" x="260" y="162.0" text-anchor="end">3c duckdb_v2_vector_cast</text>
+<rect x="270" y="149.0" width="227.8" height="20" rx="4" fill="#3fb950"/>
+<text class="val" x="505.8" y="163.0">299.26 ps (49.79 GB/s)</text>
+<text class="lbl" x="260" y="196.0" text-anchor="end">6d UDF Pushdown Projection</text>
+<rect x="270" y="183.0" width="243.5" height="20" rx="4" fill="#79c0ff"/>
+<text class="val" x="521.5" y="197.0">443.61 ps (33.59 GB/s)</text>
+<text class="lbl" x="260" y="230.0" text-anchor="end">4d Fixed ARRAY(DOUBLE, 4)</text>
+<rect x="270" y="217.0" width="248.2" height="20" rx="4" fill="#79c0ff"/>
+<text class="val" x="526.2" y="231.0">498.44 ps (59.79 GB/s)</text>
+<text class="lbl" x="260" y="264.0" text-anchor="end">4b Native STRUCT(...) Child</text>
+<rect x="270" y="251.0" width="248.9" height="20" rx="4" fill="#79c0ff"/>
+<text class="val" x="526.9" y="265.0">507.10 ps (45.91 GB/s)</text>
+<text class="lbl" x="260" y="298.0" text-anchor="end">6e UDF V2_Cast_Function (1M)</text>
+<rect x="270" y="285.0" width="261.0" height="20" rx="4" fill="#58a6ff"/>
+<text class="val" x="539.0" y="299.0">687.38 ps (21.68 GB/s)</text>
+<text class="lbl" x="260" y="332.0" text-anchor="end">4c Nested LIST(BIGINT)</text>
+<rect x="270" y="319.0" width="263.5" height="20" rx="4" fill="#58a6ff"/>
+<text class="val" x="541.5" y="333.0">730.57 ps (61.19 GB/s)</text>
+<text class="lbl" x="260" y="366.0" text-anchor="end">6a UDF Scalar odin_fma (1M)</text>
+<rect x="270" y="353.0" width="274.1" height="20" rx="4" fill="#58a6ff"/>
+<text class="val" x="552.1" y="367.0">952.62 ps (23.46 GB/s)</text>
+<text class="lbl" x="260" y="400.0" text-anchor="end">3f 128-Bit Wire Codecs</text>
+<rect x="270" y="387.0" width="283.4" height="20" rx="4" fill="#d2a8ff"/>
+<text class="val" x="561.4" y="401.0">1.20 ns (37.18 GB/s)</text>
+<text class="lbl" x="260" y="434.0" text-anchor="end">6c UDF Aggregate odin_agg_sum</text>
+<rect x="270" y="421.0" width="310.2" height="20" rx="4" fill="#d2a8ff"/>
+<text class="val" x="588.2" y="435.0">2.35 ns (3.17 GB/s)</text>
+<text class="lbl" x="260" y="468.0" text-anchor="end">6b UDF odin_gen_series (1M)</text>
+<rect x="270" y="455.0" width="310.7" height="20" rx="4" fill="#d2a8ff"/>
+<text class="val" x="588.7" y="469.0">2.39 ns (6.25 GB/s)</text>
+<text class="lbl" x="260" y="502.0" text-anchor="end">3a V2_Bytes Inline &lt;=12B</text>
+<rect x="270" y="489.0" width="338.6" height="20" rx="4" fill="#ffa657"/>
+<text class="val" x="616.6" y="503.0">4.79 ns (2.34 GB/s)</text>
+<text class="lbl" x="260" y="536.0" text-anchor="end">3b V2_Bytes Arena &gt;12B</text>
+<rect x="270" y="523.0" width="381.3" height="20" rx="4" fill="#f78166"/>
+<text class="val" x="659.3" y="537.0">13.97 ns (2.13 GB/s)</text>
+</svg>

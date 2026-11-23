@@ -18,6 +18,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Checkout temple v1.0.0
+        if: runner.os == 'Linux'
+        uses: actions/checkout@v4
+        with:
+          repository: boxxxie/temple
+          ref: v1.0.0
+          path: .tmp/temple
+          persist-credentials: false
+
       - name: Setup Odin
         uses: laytan/setup-odin@v2
         with:
@@ -33,6 +42,13 @@ jobs:
 
       - name: Check benchmark suite syntax & types
         run: odin check benchmarks
+
+      - name: Verify temple benchmark renderer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          odin run .tmp/temple/cli -- --check --warn-unused benchmarks/render -out:benchmarks/render/templates_gen.odin -pkg:bench_render -temple-import:temple:.
+          odin check benchmarks/render -collection:temple=.tmp/temple -vet -strict-style -vet-tabs -warnings-as-errors -vet-packages:bench_render
+          odin test benchmarks/render -collection:temple=.tmp/temple -vet -strict-style -vet-tabs -warnings-as-errors -vet-packages:bench_render -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
 
       - name: Run ATDD specification suite (when libduckdb is installed)
         if: runner.os == 'Linux'
