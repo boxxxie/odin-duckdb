@@ -2,7 +2,7 @@
 	"$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
 	"collections": [
 		{ "name": "hugi", "path": "../hugi/hugi" },
-		{ "name": "temple", "path": "../temple" }
+		{ "name": "runa", "path": "../runa" }
 	],
 	"enable_semantic_tokens": true,
 	"enable_document_symbols": true,
